@@ -1,3 +1,9 @@
+# files to be excluded
+.env
+.DS_Store
+data/collected/
+tansaku/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
