@@ -1,7 +1,8 @@
 # files to be excluded
 .env
 .DS_Store
-data/collected/
+data/raw/
+data/processed/
 tansaku/
 
 # Byte-compiled / optimized / DLL files

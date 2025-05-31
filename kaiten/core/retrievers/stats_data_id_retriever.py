@@ -1,123 +1,170 @@
-# ── kaiten/core/retrievers/statsfield_table_retriever.py ──
-
 import os
 import sys
 
-# We want “import base_retriever” to work when this file is run from proj_root.
-# Insert the folder “.../kaiten/core/retrievers” into sys.path at runtime:
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 
+import json
+from datetime import datetime, date
+import logging
 import pandas as pd
-from datetime import datetime
+import hashlib
+import requests
 from core_retriever import BaseRetriever
 
+class SingleStatsFieldTableFetcher(BaseRetriever):
+    def __init__(
+            self, 
+            api_key: str, 
+            statsField: str, 
+            year: str, 
+            lang: str = "J",
+            output_dir="data/raw"
+        ):
+        super().__init__(api_key)
+        self.params = {
+            "appId": self.api_key,
+            "statsField": statsField,
+            "surveyYears": year,
+            "lang": lang,
+        }
+        self.output_dir = output_dir + f"/{lang}/{year}/statsField"
+        self.result = None
+    
+    def set_base_url(self) -> str:
+        # Set to e-Stat base endpoint (adjust as needed)
+        return "https://api.e-stat.go.jp/rest/3.0/app/json/getStatsList"
 
-class StatsFieldTableRetriever(BaseRetriever):
+    def fetch(self) -> dict:
+        response_raw = self.session.get(self.base_url, params=self.params)
+        url = response_raw.url.replace(self.params["appId"], 'APPID_MASKED')
+        request_id = hashlib.sha256(url.encode("utf-8")).hexdigest()
 
-    def get_base_url(self) -> str:
-        # Hard‐coded to the e-Stat “getStatsList” endpoint root:
-        return "https://api.e-stat.go.jp/rest/3.0/app/json"
+        logging.info(f"GET {url} -> {response_raw.status_code}")
 
-    def fetch(self, stats_data_ids: list, years: list, lang: str = "J") -> pd.DataFrame:
-        outputs = []
+        output = {
+            "request_id": request_id, 
+            "requested_url": url,
+            "status_code": response_raw.status_code,
+            "timestamp": datetime.now().isoformat()
+        }
 
-        for code in stats_data_ids:
-            for year in years:
-                print(f"\nRetrieving tables for statsField={code} for year={year}")
-                response = self.get(
-                    endpoint="getStatsList",
-                    params={"statsField": code, "surveyYears": year, "lang": lang},
-                )
+        try:
+            response_raw.raise_for_status()
 
-                number_of_tables = (
-                    response
-                    .get("GET_STATS_LIST", {})
-                    .get("DATALIST_INF", {})
-                    .get("NUMBER", 0)
-                )
-                if number_of_tables == 0:
-                    print("→ Valid response, but no data available.")
-                    continue
-
-                table_list = response["GET_STATS_LIST"]["DATALIST_INF"]["TABLE_INF"]
-                df = pd.DataFrame(table_list)
-                df["retrieved_at"] = datetime.now()
-                df["statsField"] = code
-                df["surveyYears"] = year
-                outputs.append(df)
-
-        if not outputs:
-            # Return an empty DataFrame if nothing was retrieved:
-            return pd.DataFrame()
-
-        return pd.concat(outputs, axis=0).reset_index(drop=True)
-
-    def clean(self, df_tables: pd.DataFrame) -> pd.DataFrame:
-
-        if df_tables.empty:
-            return df_tables  # nothing to clean
-
-        # 1) Rename a fixed set of columns to lowercase
-        cols_to_lower_case = [
-            "STATISTICS_NAME", "TITLE", "CYCLE", "SURVEY_DATE",
-            "OPEN_DATE", "SMALL_AREA", "COLLECT_AREA", "OVERALL_TOTAL_NUMBER",
-            "UPDATED_DATE", "DESCRIPTION",
-        ]
-        renamer = {orig: orig.lower() for orig in cols_to_lower_case}
-        renamer["@id"] = "statsDataId"
-        df_tables = df_tables.rename(columns=renamer)
-
-        # 2) Flatten some JSON‐typed columns into separate “_code” and “_name”
-        json_columns = ["STAT_NAME", "GOV_ORG", "MAIN_CATEGORY", "SUB_CATEGORY"]
-        for col in json_columns:
-            df_tables[col.lower() + "_code"] = df_tables[col].apply(
-                lambda x: x.get("@code") if isinstance(x, dict) else None
-            )
-            df_tables[col.lower() + "_name"] = df_tables[col].apply(
-                lambda x: x.get("$") if isinstance(x, dict) else None
+            response = response_raw.json()
+            number_of_tables = (
+                response
+                .get("GET_STATS_LIST", {})
+                .get("DATALIST_INF", {})
+                .get("NUMBER", 0)
             )
 
-        # 3) Extract nested fields from STATISTICS_NAME_SPEC and TITLE_SPEC
-        df_tables["statistics_name_spec_category"] = df_tables["STATISTICS_NAME_SPEC"].apply(
-            lambda x: x.get("TABULATION_CATEGORY") if isinstance(x, dict) else None
-        )
-        df_tables["statistics_name_spec_sub_category1"] = df_tables["STATISTICS_NAME_SPEC"].apply(
-            lambda x: x.get("TABULATION_SUB_CATEGORY1") if isinstance(x, dict) else None
-        )
+            output["response"] = response
+            output["number_of_tables"] = number_of_tables
 
-        df_tables["title_spec_name"] = df_tables["TITLE_SPEC"].apply(
-            lambda x: x.get("TABLE_NAME") if isinstance(x, dict) else None
-        )
-        df_tables["title_spec_explanation"] = df_tables["TITLE_SPEC"].apply(
-            lambda x: x.get("TABLE_EXPLANATION") if isinstance(x, dict) else None
-        )
+        except requests.exceptions.HTTPError as e:
+            print(f"HTTP Error: {e}")
+            output["response"] = {}
+            output["number_of_tables"] = 0
 
-        # 4) Drop the original JSON columns (we already flattened them)
-        drop_cols = json_columns + ["STATISTICS_NAME_SPEC", "TITLE_SPEC"]
-        return df_tables.drop(columns=drop_cols, errors="ignore")
+        return output
 
-    def save(self, data: pd.DataFrame, path: str):
-        """
-        Save the final cleaned DataFrame to CSV at the given path.
-        """
-        print(f"\nWriting output to: {path}")
-        data.to_csv(path, index=False)
-        print("→ Done.")
+    def save(self, data: dict, path: str):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        logging.info(f"Saved raw response to {path}")
 
     def run(self):
-        # 1) Hard‐coded CSV of statsField codes (same as your previous script)
-        path_list = os.path.join("data", "official", "statsfield.csv")
-        df_statsfields = pd.read_csv(path_list, dtype="object", header=0)
-        list_statsfields = sorted(df_statsfields["大分類コード"].unique())
+        os.makedirs(self.output_dir, exist_ok=True)
+        filename = f"statsField_{self.params['statsField']}_{self.params['surveyYears']}_statsDataIds.json"
+        output_path = os.path.join(self.output_dir, filename)
+        
+        self.result = self.fetch()
+        if self.result and self.result["number_of_tables"] > 0:
+            self.save(self.result, output_path)
+            logging.info(f"Number of tables: {self.result['number_of_tables']}")
+        elif self.result["status_code"] == "200":
+            logging.info("> Valid response, but no data available.")
+        else:
+            logging.info("No results found")
 
-        # 2) Fetch raw tables for years 2024 & 2023
-        raw_df = self.fetch(stats_data_ids=list_statsfields, years=["2024", "2023"], lang="J")
 
-        # 3) Clean them
-        cleaned_df = self.clean(raw_df)
+class MultiStatsFieldTableFetcher:
+    def __init__(
+        self,
+        api_key: str,
+        year: str,
+        statsFields: list,
+        lang: str = "J",
+        output_dir_raw: str = "data/raw",
+        output_dir_processed: str = "data/processed"
+    ):
+        self.api_key = api_key
+        self.year = year
+        self.statsFields = statsFields
+        self.lang = lang
+        self.output_dir_raw = output_dir_raw
+        self.output_dir_processed = output_dir_processed + f"/{lang}/{year}/listStatsFields"
+        self.run_date = date.today().strftime('%Y%m%d')
+        self.df_result = None
 
-        # 4) Write final CSV (same path as before)
-        output_path = os.path.join("data", "collected", "retrieved_tables_via_statsfield_test.csv")
-        self.save(cleaned_df, output_path)
+    def fetch_multiple(self):
+        all_dfs = []
+        for statsField in self.statsFields:
+            print(f"\nRetrieving tables for statsField={statsField} for year={self.year}")
+            
+            single_fetcher = SingleStatsFieldTableFetcher(
+                api_key=self.api_key,
+                statsField=statsField,
+                year=self.year,
+                lang=self.lang,
+                output_dir=self.output_dir_raw,
+            )
+
+            single_fetcher.run()
+            if single_fetcher.result.get("number_of_tables", 0) == 0:
+                continue
+
+            response = single_fetcher.result.get("response", {})
+            table_list = (
+                response.get("GET_STATS_LIST", {})
+                .get("DATALIST_INF", {})
+                .get("TABLE_INF", [])
+            )
+            if table_list:
+                df = pd.DataFrame(table_list)
+                df["retrieved_at"] = datetime.now()
+                df["statsField"] = statsField
+                df["surveyYears"] = self.year
+                all_dfs.append(df)
+
+        if not all_dfs:
+            df_result = pd.DataFrame()
+        else:
+            df_result = pd.concat(all_dfs, axis=0).reset_index(drop=True)
+        
+        self.df_result = df_result
+
+        return 
+
+    def save(self):
+        if self.df_result.empty:
+            print("No data to save.")
+            return
+
+        filename = f"list_statsDataIds_{self.run_date}.csv"
+        save_dir = os.path.join(self.output_dir_processed)
+        os.makedirs(save_dir, exist_ok=True)
+        output_path = os.path.join(save_dir, filename)
+
+        self.df_result.to_csv(output_path, index=False)
+        print(f"Saved combined DataFrame to: {output_path}")
+
+        return
+    
+    def run(self):
+        self.fetch_multiple()
+        self.save()
