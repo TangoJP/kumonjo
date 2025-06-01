@@ -7,7 +7,7 @@ sys.path.insert(0, PARENT_DIR)
 
 import pandas as pd
 from core.retrievers.core_retriever import BaseRetriever
-from core.retrievers.stats_data_id_retriever import MultiStatsFieldTableFetcher
+from core.retrievers.stats_data_ids_retriever import MultiStatsFieldTableFetcher
 
 PATH_LIST_OF_STATS_DATA_IDS = os.path.join("data", "official", "statsfield.csv")
 

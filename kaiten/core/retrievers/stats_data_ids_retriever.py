@@ -15,10 +15,10 @@ from core_retriever import BaseRetriever
 
 class SingleStatsFieldTableFetcher(BaseRetriever):
     def __init__(
-            self, 
-            api_key: str, 
-            statsField: str, 
-            year: str, 
+            self,
+            api_key: str,
+            statsField: str,
+            year: str,
             lang: str = "J",
             output_dir="data/raw"
         ):
@@ -150,6 +150,50 @@ class MultiStatsFieldTableFetcher:
 
         return 
 
+    def clean_result(self):
+    
+        # rename some columns first
+        cols_to_lower_case = [
+            'STATISTICS_NAME', 
+            'TITLE', 
+            'CYCLE', 
+            'SURVEY_DATE',
+            'OPEN_DATE', 
+            'SMALL_AREA', 
+            'COLLECT_AREA', 
+            'OVERALL_TOTAL_NUMBER',
+            'UPDATED_DATE', 
+            'DESCRIPTION',
+        ]
+        
+        renamer = {k: k.lower() for k in cols_to_lower_case}
+        renamer['@id'] = 'statsDataId'
+
+        self.df_result = self.df_result.rename(columns=renamer)
+
+        # process json columns
+        cols_json = [
+            'STAT_NAME',
+            'GOV_ORG',
+            'MAIN_CATEGORY',
+            'SUB_CATEGORY',
+        ]
+
+        for c in cols_json:
+            self.df_result[c.lower() + '_code'] = self.df_result.loc[:, c].apply(lambda x: x.get('@code'))
+            self.df_result[c.lower() + '_name'] = self.df_result.loc[:, c].apply(lambda x: x.get('$'))
+
+        # process other json columns
+        self.df_result['statistics_name_spec_category'] = self.df_result.loc[:, 'STATISTICS_NAME_SPEC'].apply(lambda x: x.get('TABULATION_CATEGORY'))
+        self.df_result['statistics_name_spec_sub_category1'] = self.df_result.loc[:, 'STATISTICS_NAME_SPEC'].apply(lambda x: x.get('TABULATION_SUB_CATEGORY1'))
+        
+        self.df_result['title_spec_name'] = self.df_result.loc[:, 'TITLE_SPEC'].apply(lambda x: x.get('TABLE_NAME'))
+        self.df_result['title_spec_explanation'] = self.df_result.loc[:, 'TITLE_SPEC'].apply(lambda x: x.get('TABLE_EXPLANATION'))
+        
+        self.df_result = self.df_result.drop(cols_json + ['STATISTICS_NAME_SPEC', 'TITLE_SPEC'], axis=1)
+
+        return
+    
     def save(self):
         if self.df_result.empty:
             print("No data to save.")
@@ -167,4 +211,5 @@ class MultiStatsFieldTableFetcher:
     
     def run(self):
         self.fetch_multiple()
+        self.clean_result()
         self.save()
