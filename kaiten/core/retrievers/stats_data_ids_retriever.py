@@ -29,7 +29,7 @@ class SingleStatsFieldTableFetcher(BaseRetriever):
             "surveyYears": year,
             "lang": lang,
         }
-        self.output_dir = output_dir + f"/{lang}/{year}/statsField"
+        self.output_dir = os.path.join(output_dir, lang, "statsField")
         self.result = None
     
     def set_base_url(self) -> str:
@@ -79,7 +79,7 @@ class SingleStatsFieldTableFetcher(BaseRetriever):
 
     def run(self):
         os.makedirs(self.output_dir, exist_ok=True)
-        filename = f"statsField_{self.params['statsField']}_{self.params['surveyYears']}_statsDataIds.json"
+        filename = f"{self.params['surveyYears']}_statsDataIds_from_statsField_{self.params['statsField']}.json"
         output_path = os.path.join(self.output_dir, filename)
         
         self.result = self.fetch()
@@ -107,7 +107,7 @@ class MultiStatsFieldTableFetcher:
         self.statsFields = statsFields
         self.lang = lang
         self.output_dir_raw = output_dir_raw
-        self.output_dir_processed = output_dir_processed + f"/{lang}/{year}/listStatsFields"
+        self.output_dir_processed = output_dir_processed + f"/{lang}/listOfStatsFields"
         self.run_date = date.today().strftime('%Y%m%d')
         self.df_result = None
 
@@ -192,6 +192,8 @@ class MultiStatsFieldTableFetcher:
         
         self.df_result = self.df_result.drop(cols_json + ['STATISTICS_NAME_SPEC', 'TITLE_SPEC'], axis=1)
 
+        self.df_result['retrieval_date'] = self.run_date
+
         return
     
     def save(self):
@@ -199,10 +201,12 @@ class MultiStatsFieldTableFetcher:
             print("No data to save.")
             return
 
-        filename = f"list_statsDataIds_{self.run_date}.csv"
         save_dir = os.path.join(self.output_dir_processed)
         os.makedirs(save_dir, exist_ok=True)
-        output_path = os.path.join(save_dir, filename)
+        output_path = os.path.join(
+            save_dir,
+            f"{self.year}_list_of_statsDataIds.csv"
+        )
 
         self.df_result.to_csv(output_path, index=False)
         print(f"Saved combined DataFrame to: {output_path}")

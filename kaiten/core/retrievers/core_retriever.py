@@ -1,6 +1,8 @@
 import argparse
 import logging
 import requests
+import os
+import json
 from abc import ABC, abstractmethod
 from typing import Any, Dict
 
@@ -19,9 +21,11 @@ class BaseRetriever(ABC):
     def fetch(self, *args, **kwargs):
         pass
 
-    @abstractmethod
-    def save(self, data: Any, path: str):
-        pass
+    def save(self, data: dict, path: str):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        logging.info(f"Saved raw response to {path}")
 
     @staticmethod
     def parse_args():

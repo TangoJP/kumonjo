@@ -30,28 +30,61 @@ class StatsDataIdTableRetriever(BaseRetriever):
             "surveyYears": year,
             "lang": lang,
         }
-        self.output_dir = output_dir + f"/{lang}/{year}/statsDataId"
+        
+        self.output_dir = os.path.join(output_dir, lang, "statsDataId")
+        os.makedirs(self.output_dir, exist_ok=True)
+
         self.result = None
+        self.run_date = date.today().strftime('%Y%m%d')
 
-    @abstractmethod
     def set_base_url(self) -> str:
-        pass
+        return "https://api.e-stat.go.jp/rest/3.0/app/json/getStatsData"
 
-    @abstractmethod
-    def fetch(self, *args, **kwargs):
-        pass
+    def fetch(self) -> dict:
+        response_raw = self.session.get(self.base_url, params=self.params)
+        url = response_raw.url.replace(self.params["appId"], 'APPID_MASKED')
+        request_id = hashlib.sha256(url.encode("utf-8")).hexdigest()
 
-    @abstractmethod
-    def save(self, data: Any, path: str):
-        pass
+        logging.info(f"GET {url} -> {response_raw.status_code}")
 
-    @staticmethod
-    def parse_args():
-        parser = argparse.ArgumentParser(description="Retriever CLI")
-        parser.add_argument("--api_key", required=True, help="API key for the service")
-        parser.add_argument("--year", required=False, help="survey year to be input")
-        return parser.parse_args()
+        output = {
+            "request_id": request_id, 
+            "requested_url": url,
+            "status_code": response_raw.status_code,
+            "timestamp": datetime.now().isoformat(),
+            "retrieval_date": self.run_date
+        }
 
-    @abstractmethod
+        try:
+            response_raw.raise_for_status()
+
+            if response_raw.status_code == 200:
+                try:
+                    response = response_raw.json()
+                    output["response"] = response
+                    logging.info(f"Successfully decoded JSON")
+                except json.JSONDecodeError as e:
+                    logging.info(f"Failed to decode JSON: {e}")
+
+            else:
+                logging.info(f"Error {response_raw.status_code}: {response_raw.text}")
+
+        except requests.exceptions.HTTPError as e:
+            logging.info(f"HTTP Error: {e}")
+
+        return output
+
     def run(self):
-        pass
+        output_path = os.path.join(
+            self.output_dir, 
+            f"{self.params['surveyYears']}_statsDataId_{self.params['statsDataId']}.json"
+        )
+        
+        self.result = self.fetch()
+        if self.result:
+            self.save(self.result, output_path)
+            logging.info(f"file saved to {output_path}")
+        elif self.result["status_code"] == "200":
+            logging.info("> Valid response, but no data available.")
+        else:
+            logging.info("No results found")
