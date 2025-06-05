@@ -22,7 +22,8 @@ class StatsDataIdTableRetriever(BaseRetriever):
             year: str,
             lang: str = "J",
             output_dir_raw="data/raw",
-            output_dir_processed="data/processed"
+            output_dir_processed="data/processed",
+            output_format='parquet'
         ):
         super().__init__(api_key)
         self.params = {
@@ -36,6 +37,10 @@ class StatsDataIdTableRetriever(BaseRetriever):
         self.output_dir_processed = os.path.join(output_dir_processed, lang, "statsDataId")
         os.makedirs(self.output_dir_raw, exist_ok=True)
         os.makedirs(self.output_dir_processed, exist_ok=True)
+
+        if output_format not in ['csv', 'parquet']:
+            raise TypeError("outputformat must be csv or parquet")
+        self.output_format = output_format
 
         self.result = None
         self.run_date = date.today().strftime('%Y%m%d')
@@ -205,11 +210,14 @@ class StatsDataIdTableRetriever(BaseRetriever):
         if not df_values.empty:
             output_path_df= os.path.join(
                 self.output_dir_processed, 
-                f"{self.params['surveyYears']}_statsDataId_{self.params['statsDataId']}.csv"
+                f"{self.params['surveyYears']}_statsDataId_{self.params['statsDataId']}.{self.output_format}"
             )
 
             df_out = StatsDataIdTableRetriever.reorder_df_columns(df_values, offset=2)
-            df_out.to_csv(output_path_df, index=False)
+            if self.output_format == 'parquet':
+                df_out.to_parquet(output_path_df, index=False)
+            else:
+                df_out.to_csv(output_path_df, index=False)
             logging.info(f"Saved combined DataFrame to: {output_path_df}")
 
         else:
