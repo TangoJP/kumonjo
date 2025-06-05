@@ -34,7 +34,8 @@ if __name__ == "__main__":
             year=args.year,
             statsDataId=id_,
             lang="J",
-            output_dir="data/raw",
+            output_dir_raw="data/raw",
+            output_dir_processed="data/processed"
         )
         try:
             fetcher.run()
