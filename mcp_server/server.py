@@ -18,7 +18,7 @@ from mcp.server.fastmcp import FastMCP
 
 mcp = FastMCP(
     "Kumonjo",
-    instructions="Tools for discovering and retrieving Japanese government statistics (e-Stat). Discovery uses catalog_full.parquet when present. Prefer catalog_overview for lookup: years available, dataset counts, stats fields per year, and optional stats areas (one call). Use discover_datasets to search datasets by year/stats_field/keyword; use retrieve_and_process to fetch table data for a statsDataId. Other tools (list_available_years, list_stats_fields_for_year, list_stats_areas) are optional alternatives to catalog_overview.",
+    instructions="Tools for discovering and retrieving Japanese government statistics (e-Stat). Discovery uses catalog_full.parquet when present. Prefer catalog_overview for lookup: years available, dataset counts, stats fields per year, and optional stats areas (one call). For 'aggregate by X' (e.g. by gov_org, by subcategory within a stats_field, by year), use catalog_aggregate(by=...) with optional year and filter_column/filter_value. Use discover_datasets to search datasets by year/stats_field/keyword; use retrieve_and_process to fetch table data for a statsDataId. Other tools (list_available_years, list_stats_fields_for_year, list_stats_areas) are optional alternatives to catalog_overview.",
     json_response=True,
 )
 
@@ -70,6 +70,60 @@ def list_stats_fields_for_year(
     from kumonjo.discovery.catalog import list_stats_fields_for_year as _list_stats_fields_for_year
 
     return _list_stats_fields_for_year(year=year, lang=lang, include_names=include_names)
+
+
+@mcp.tool()
+def catalog_aggregate(
+    by: str,
+    year: str | None = None,
+    filter_column: str | None = None,
+    filter_value: str | None = None,
+    lang: str = "J",
+    limit: int = 50,
+    include_display_name: bool = True,
+) -> dict:
+    """
+    Aggregate catalog by one attribute: group by `by` and count datasets. Single general tool for 'list by X' questions.
+    by: attribute to group by. One of: statsField, gov_org_code, gov_org_name, sub_category_code, sub_category_name, statistics_name, stat_name_code, surveyYears.
+    year: optional; limit to this survey year (faster — predicate pushdown).
+    filter_column, filter_value: optional; only rows where filter_column == filter_value (e.g. statsField + 02 for 人口・世帯 only).
+    lang: language code (J = Japanese).
+    limit: max groups to return (default 50).
+    include_display_name: when by is a code, add name (e.g. gov_org_name when by=gov_org_code).
+    Returns by, year, filter_*, lang, groups (value, dataset_count, name), message.
+    Examples: by=gov_org_code → 府省別件数; by=sub_category_code, filter_column=statsField, filter_value=02 → 人口・世帯の小分類別.
+    """
+    from kumonjo.discovery.catalog import catalog_aggregate as _catalog_aggregate
+
+    return _catalog_aggregate(
+        by=by,
+        year=year,
+        filter_column=filter_column,
+        filter_value=filter_value,
+        lang=lang,
+        limit=limit,
+        include_display_name=include_display_name,
+    )
+
+
+@mcp.tool()
+def time_series_discovery(
+    year_start: str | None = None,
+    year_end: str | None = None,
+    lang: str = "J",
+    min_years: int = 2,
+    limit: int = 50,
+) -> dict:
+    """
+    Find statistics that exist across multiple years (e.g. same statistics_name 2020–2024). Use for '複数年にわたる統計' or '毎年ある統計'.
+    year_start, year_end: optional year range; only consider years in [year_start, year_end].
+    min_years: include only statistics appearing in at least this many years (default 2).
+    limit: max number of statistics to return (default 50).
+    Returns year_start, year_end, lang, statistics (statistics_name, stat_name_code, years, year_count), message.
+    """
+    from kumonjo.discovery.catalog import time_series_discovery as _time_series_discovery
+
+    return _time_series_discovery(year_start=year_start, year_end=year_end, lang=lang, min_years=min_years, limit=limit)
 
 
 @mcp.tool()

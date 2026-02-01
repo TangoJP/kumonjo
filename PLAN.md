@@ -160,9 +160,9 @@ So discovery is an internal step the chatbot uses to *identify* which data to re
 - [x] **2-4** **discover_datasets**: year, lang, stats_field, keyword, limit → list of statsDataIds + metadata from catalog (uses catalog_full.parquet when present).
 - [x] **2-5** Consolidated catalog: **build_catalog** from raw/J/statsField → **catalog_full.parquet**; discovery uses it for fast lookups.
 - [x] **2-6** Document MCP + Claude Desktop in **docs/MCP_CLAUDE_DESKTOP.md**.
-- [ ] **2-7** **Search by stats_field with subcategories**: Within 大分類, return dataset counts by 小分類 (e.g. 人口・世帯 → 人口, 人口移動, 世帯).
-- [ ] **2-8** **List datasets by government organization**: Filter/aggregate by 府省 (e.g. 総務省, 厚生労働省); dataset counts per gov_org.
-- [ ] **2-9** **Time-series data discovery**: Find statistics available across multiple years (e.g. same statistics_name 2020–2024).
+- [x] **2-7** **Search by stats_field with subcategories**: Within 大分類, return dataset counts by 小分類 (e.g. 人口・世帯 → 人口, 人口移動, 世帯).
+- [x] **2-8** **List datasets by government organization**: Filter/aggregate by 府省 (e.g. 総務省, 厚生労働省); dataset counts per gov_org.
+- [x] **2-9** **Time-series data discovery**: Find statistics available across multiple years (e.g. same statistics_name 2020–2024).
 - [ ] **2-10** (TBD) **Similar-dataset search**: Suggest related datasets by statistics name or keyword (e.g. embeddings or e-Stat metadata).
 - [ ] **2-11** (TBD) **Search history & favorites**: Persist search conditions or dataset IDs for re-use.
 

@@ -135,6 +135,136 @@ def list_available_years(
     }
 
 
+# Columns that can be used for aggregation (group-by). Must exist in catalog parquet.
+_AGGREGATE_BY_ALLOWED = frozenset({
+    "statsField",
+    "gov_org_code",
+    "gov_org_name",
+    "sub_category_code",
+    "sub_category_name",
+    "statistics_name",
+    "stat_name_code",
+    "surveyYears",
+})
+
+
+def catalog_aggregate(
+    by: str,
+    year: str | None = None,
+    filter_column: str | None = None,
+    filter_value: str | None = None,
+    lang: str = "J",
+    limit: int = 50,
+    include_display_name: bool = True,
+    processed_dir: Path | str | None = None,
+) -> dict:
+    """
+    Aggregate catalog by a single attribute: group by `by` and count datasets (statsDataId).
+    Fast: reads only the columns needed and uses predicate pushdown when year or filter are set.
+    by: one of statsField, gov_org_code, gov_org_name, sub_category_code, sub_category_name,
+        statistics_name, stat_name_code, surveyYears.
+    year: if set, only rows with surveyYears == year (predicate pushdown).
+    filter_column, filter_value: if set, only rows where filter_column == filter_value (predicate pushdown).
+    include_display_name: when by is a code column, try to add a name (e.g. from statsfield.csv for statsField).
+    Returns by, year, filter_column, filter_value, lang, groups (list of {value, dataset_count, name?}), message.
+    """
+    by = str(by).strip()
+    if by not in _AGGREGATE_BY_ALLOWED:
+        return {
+            "by": by,
+            "year": year,
+            "lang": lang,
+            "groups": [],
+            "message": f"by は次のいずれかにしてください: {', '.join(sorted(_AGGREGATE_BY_ALLOWED))}",
+        }
+    cols = [by, "statsDataId"]
+    if filter_column and filter_column not in cols:
+        cols.append(filter_column)
+    if year or (filter_column and filter_column == "surveyYears"):
+        if "surveyYears" not in cols:
+            cols.append("surveyYears")
+    # Optional display name column (e.g. gov_org_name when by=gov_org_code)
+    name_col = None
+    if include_display_name:
+        if by == "gov_org_code" and "gov_org_name" not in cols:
+            cols.append("gov_org_name")
+            name_col = "gov_org_name"
+        elif by == "sub_category_code" and "sub_category_name" not in cols:
+            cols.append("sub_category_name")
+            name_col = "sub_category_name"
+    filters: list[tuple[str, str, str | int]] = []
+    if year is not None and str(year).strip():
+        filters.append(("surveyYears", "==", str(year)))
+    if filter_column and filter_value is not None and str(filter_value).strip():
+        filters.append((filter_column, "==", str(filter_value).strip()))
+    df = _load_full_catalog(
+        lang=lang,
+        processed_dir=processed_dir,
+        columns=cols,
+        filters=filters if filters else None,
+    )
+    if df.empty:
+        return {
+            "by": by,
+            "year": year,
+            "filter_column": filter_column,
+            "filter_value": filter_value,
+            "lang": lang,
+            "groups": [],
+            "message": "カタログがありません。run_build_catalog を実行してください。" if not year else "該当するデータがありません。",
+        }
+    if by not in df.columns:
+        return {"by": by, "year": year, "lang": lang, "groups": [], "message": f"列 '{by}' がありません。"}
+    agg_dict = {"dataset_count": ("statsDataId", "nunique")} if "statsDataId" in df.columns else {"dataset_count": (by, "count")}
+    if name_col and name_col in df.columns and name_col != by:
+        agg_dict["_name"] = (name_col, "first")
+    counts = df.groupby(by, dropna=False).agg(**agg_dict).reset_index()
+    counts = counts.sort_values("dataset_count", ascending=False).head(limit)
+    groups = []
+    for _, row in counts.iterrows():
+        val = row[by]
+        value = str(val) if pd.notna(val) else ""
+        name = str(row["_name"]) if "_name" in row and pd.notna(row.get("_name")) else value
+        groups.append({"value": value, "dataset_count": int(row["dataset_count"]), "name": name})
+    if by == "statsField" and include_display_name:
+        areas = list_stats_areas()
+        code_to_name = {a["code"]: a.get("name", "") for a in areas.get("stats_areas", [])}
+        for g in groups:
+            g["name"] = code_to_name.get(g["value"], g.get("name", g["value"]))
+    total = sum(g["dataset_count"] for g in groups)
+    msg = f"by={by}: {len(groups)} 件、データセット合計 {total} 件。"
+    if year:
+        msg += f"（{year}年）"
+    if filter_column and filter_value:
+        msg += f" 条件: {filter_column}={filter_value}"
+    return {
+        "by": by,
+        "year": year,
+        "filter_column": filter_column,
+        "filter_value": filter_value,
+        "lang": lang,
+        "groups": groups,
+        "message": msg,
+    }
+
+
+def _load_full_catalog(
+    lang: str = "J",
+    processed_dir: Path | str | None = None,
+    columns: list[str] | None = None,
+    filters: list[tuple[str, str, str | int]] | None = None,
+) -> pd.DataFrame:
+    """Read the consolidated catalog parquet into a DataFrame. Optional columns and filters."""
+    base = Path(processed_dir) if processed_dir else get_data_dirs()["processed"]
+    consolidated = _get_consolidated_path(lang, base)
+    if consolidated is None or not consolidated.exists():
+        return pd.DataFrame()
+    try:
+        return pd.read_parquet(consolidated, columns=columns, filters=filters)
+    except Exception:
+        return pd.DataFrame()
+
+
 def load_catalog(
     year: str,
     lang: str = "J",
@@ -292,6 +422,134 @@ def list_stats_fields_for_year(
         "lang": lang,
         "stats_fields": stats_fields,
         "message": f"{year}年: 統計分野 {len(stats_fields)} 件（データセット合計 {counts.sum()} 件）。",
+    }
+
+
+def stats_field_subcategories(
+    stats_field: str,
+    year: str | None = None,
+    lang: str = "J",
+    processed_dir: Path | str | None = None,
+) -> dict:
+    """
+    Within a 大分類 (stats_field), return dataset counts broken down by 小分類 (sub_category).
+    Delegates to catalog_aggregate(by="sub_category_code", filter_column="statsField", filter_value=stats_field).
+    """
+    stats_field = str(stats_field).strip()
+    out = catalog_aggregate(
+        by="sub_category_code",
+        year=year,
+        filter_column="statsField",
+        filter_value=stats_field,
+        lang=lang,
+        limit=100,
+        include_display_name=True,
+        processed_dir=processed_dir,
+    )
+    groups = out.get("groups", [])
+    subcategories = [{"sub_category_code": g["value"], "sub_category_name": g.get("name", g["value"]), "dataset_count": g["dataset_count"]} for g in groups]
+    areas = list_stats_areas()
+    code_to_name = {a["code"]: a.get("name", "") for a in areas.get("stats_areas", [])}
+    return {
+        "stats_field": stats_field,
+        "stats_field_name": code_to_name.get(stats_field, ""),
+        "year": out.get("year"),
+        "lang": out.get("lang"),
+        "subcategories": subcategories,
+        "message": out.get("message", ""),
+    }
+
+
+def list_datasets_by_gov_org(
+    year: str | None = None,
+    lang: str = "J",
+    limit: int = 50,
+    gov_org_code: str | None = None,
+    gov_org_name: str | None = None,
+    processed_dir: Path | str | None = None,
+) -> dict:
+    """
+    Aggregate dataset counts by government organization (府省).
+    Use when the user asks for datasets by ministry (e.g. 総務省, 厚生労働省).
+    year: if set, limit to that year; otherwise use all years.
+    gov_org_code or gov_org_name: if set, only load rows for that org (predicate pushdown — much faster).
+    """
+    fcol = "gov_org_code" if (gov_org_code and str(gov_org_code).strip()) else "gov_org_name"
+    fval = str(gov_org_code or gov_org_name or "").strip() or None
+    out = catalog_aggregate(
+        by="gov_org_code",
+        year=year,
+        filter_column=fcol if fval else None,
+        filter_value=fval,
+        lang=lang,
+        limit=limit,
+        include_display_name=True,
+        processed_dir=processed_dir,
+    )
+    groups = out.get("groups", [])
+    gov_orgs = [{"gov_org_code": g["value"], "gov_org_name": g.get("name", g["value"]), "dataset_count": g["dataset_count"]} for g in groups]
+    if fcol == "gov_org_name" and gov_orgs:
+        gov_orgs[0]["gov_org_code"] = ""
+    return {"year": out.get("year"), "lang": out.get("lang"), "gov_orgs": gov_orgs, "message": out.get("message", "")}
+
+
+def time_series_discovery(
+    year_start: str | None = None,
+    year_end: str | None = None,
+    lang: str = "J",
+    min_years: int = 2,
+    limit: int = 50,
+    processed_dir: Path | str | None = None,
+) -> dict:
+    """
+    Find statistics that exist across multiple years (e.g. same statistics_name in 2020–2024).
+    Use when the user asks "which statistics are available annually?" or "same stats 2020 to 2024".
+    year_start, year_end: optional range; if both set, only consider years in [year_start, year_end].
+    min_years: include only statistics that appear in at least this many years (default 2).
+    """
+    df = _load_full_catalog(
+        lang=lang,
+        processed_dir=processed_dir,
+        columns=["statistics_name", "stat_name_code", "surveyYears", "statsDataId"],
+    )
+    if df.empty or "statistics_name" not in df.columns or "surveyYears" not in df.columns:
+        return {
+            "year_start": year_start,
+            "year_end": year_end,
+            "lang": lang,
+            "statistics": [],
+            "message": "カタログがありません。run_build_catalog を実行してください。" if df.empty else "statistics_name または surveyYears がありません。",
+        }
+    if year_start is not None and str(year_start).strip():
+        df = df[df["surveyYears"].astype(str) >= str(year_start)]
+    if year_end is not None and str(year_end).strip():
+        df = df[df["surveyYears"].astype(str) <= str(year_end)]
+    if df.empty:
+        return {"year_start": year_start, "year_end": year_end, "lang": lang, "statistics": [], "message": "該当する年のデータがありません。"}
+    # Group by statistics_name (or stat_name_code if available for stability)
+    key = "stat_name_code" if "stat_name_code" in df.columns and df["stat_name_code"].notna().any() else "statistics_name"
+    df = df.dropna(subset=[key])
+    if df.empty:
+        return {"year_start": year_start, "year_end": year_end, "lang": lang, "statistics": [], "message": "統計名でグループ化できるデータがありません。"}
+    grouped = df.groupby(key)
+    years_per_stat = grouped["surveyYears"].apply(lambda s: sorted(s.astype(str).unique().tolist())).to_dict()
+    name_per_key = grouped["statistics_name"].first().to_dict() if "statistics_name" in df.columns else {k: k for k in years_per_stat}
+    candidates = [(k, years_per_stat[k], name_per_key.get(k, k)) for k in years_per_stat if len(years_per_stat[k]) >= min_years]
+    candidates.sort(key=lambda x: -len(x[1]))
+    statistics = []
+    for k, years, name in candidates[:limit]:
+        statistics.append({
+            "statistics_name": name,
+            "stat_name_code": k if key == "stat_name_code" else None,
+            "years": years,
+            "year_count": len(years),
+        })
+    return {
+        "year_start": year_start,
+        "year_end": year_end,
+        "lang": lang,
+        "statistics": statistics,
+        "message": f"複数年にわたる統計: {len(statistics)} 件（最低 {min_years} 年）。" + (f" 対象年: {year_start}–{year_end}" if year_start and year_end else ""),
     }
 
 

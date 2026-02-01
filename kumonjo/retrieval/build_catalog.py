@@ -112,7 +112,8 @@ def build_consolidated_catalog(
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / f"catalog_full.{output_format}"
     if output_format == "parquet":
-        combined.to_parquet(out_path, index=False)
+        # Smaller row groups improve predicate pushdown (e.g. filter by year/statsField)
+        combined.to_parquet(out_path, index=False, row_group_size=50_000)
     else:
         combined.to_csv(out_path, index=False)
     logger.info("Saved consolidated catalog to %s (%d rows)", out_path, len(combined))
