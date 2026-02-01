@@ -1,5 +1,6 @@
 """Load and search the listOfStatsFields catalog (dataset discovery)."""
 
+import functools
 import re
 from pathlib import Path
 
@@ -8,24 +9,59 @@ import pandas as pd
 from kumonjo.config import get_data_dirs
 
 
+# ---------------------------------------------------------------------------
+# Cached helpers for statsfield.csv (avoids repeated file I/O)
+# ---------------------------------------------------------------------------
+
+
+@functools.lru_cache(maxsize=1)
+def _load_statsfield_df() -> pd.DataFrame:
+    """Load statsfield.csv once and cache it."""
+    dirs = get_data_dirs()
+    path = dirs["official"] / "statsfield.csv"
+    if not path.exists():
+        return pd.DataFrame()
+    return pd.read_csv(path, dtype="object", header=0)
+
+
+@functools.lru_cache(maxsize=1)
+def _get_stats_field_code_to_name() -> dict[str, str]:
+    """Return cached mapping of statsField code -> name (大分類コード -> 大分類)."""
+    df = _load_statsfield_df()
+    if df.empty or "大分類コード" not in df.columns:
+        return {}
+    return {
+        str(code).strip(): group["大分類"].iloc[0] if "大分類" in group.columns else ""
+        for code, group in df.groupby("大分類コード", sort=False)
+    }
+
+
 def list_stats_areas(official_dir: Path | str | None = None) -> dict:
     """
     List all stats areas (大分類・小分類) from the official statsfield.csv.
     Use when the user asks "list of all stats areas" or "どの統計分野がある？".
     Returns dict with stats_areas (list of {code, name, sub_categories}), and message.
     """
-    dirs = get_data_dirs()
-    base = Path(official_dir) if official_dir else dirs["official"]
-    path = base / "statsfield.csv"
-    if not path.exists():
+    # Use cached df when official_dir is default
+    if official_dir is None:
+        df = _load_statsfield_df()
+    else:
+        path = Path(official_dir) / "statsfield.csv"
+        if not path.exists():
+            return {
+                "stats_areas": [],
+                "message": "公式の統計分野一覧（statsfield.csv）が見つかりません。",
+            }
+        df = pd.read_csv(path, dtype="object", header=0)
+
+    if df.empty:
         return {
             "stats_areas": [],
             "message": "公式の統計分野一覧（statsfield.csv）が見つかりません。",
         }
 
-    df = pd.read_csv(path, dtype="object", header=0)
     # Expected columns: NO, 大分類, 大分類コード, 小分類, 小分類コード
-    if df.empty or "大分類コード" not in df.columns:
+    if "大分類コード" not in df.columns:
         return {"stats_areas": [], "message": "statsfield.csv の形式が想定と異なります。"}
 
     # Build list of top-level (大分類) with sub_categories (小分類)
@@ -88,12 +124,11 @@ def list_available_years(
                 years_found = []
                 summary = []
             else:
-                years_found = sorted(df["surveyYears"].astype(str).unique().tolist())
-                summary = []
-                for y in years_found:
-                    sub = df[df["surveyYears"].astype(str) == y]
-                    n = len(sub.drop_duplicates(subset=["statsDataId"]) if "statsDataId" in sub.columns else sub)
-                    summary.append({"year": y, "dataset_count": n})
+                # Use groupby for efficient counting (single pass)
+                df["surveyYears"] = df["surveyYears"].astype(str)
+                counts = df.groupby("surveyYears")["statsDataId"].nunique().sort_index()
+                years_found = counts.index.tolist()
+                summary = [{"year": y, "dataset_count": int(n)} for y, n in counts.items()]
             return {
                 "years": years_found,
                 "lang": lang,
@@ -227,8 +262,8 @@ def catalog_aggregate(
         name = str(row["_name"]) if "_name" in row and pd.notna(row.get("_name")) else value
         groups.append({"value": value, "dataset_count": int(row["dataset_count"]), "name": name})
     if by == "statsField" and include_display_name:
-        areas = list_stats_areas()
-        code_to_name = {a["code"]: a.get("name", "") for a in areas.get("stats_areas", [])}
+        # Use cached mapping
+        code_to_name = _get_stats_field_code_to_name()
         for g in groups:
             g["name"] = code_to_name.get(g["value"], g.get("name", g["value"]))
     total = sum(g["dataset_count"] for g in groups)
@@ -346,14 +381,12 @@ def catalog_overview(
                 out["message"] = f"検索可能な年: {', '.join(years_found)}。（catalog_full.parquet が未作成のため件数は不明。run_build_catalog を実行してください。）"
 
     if not df.empty and "surveyYears" in df.columns:
-        years_found = sorted(df["surveyYears"].astype(str).unique().tolist())
+        # Use groupby for efficient counting (single pass)
+        df["surveyYears"] = df["surveyYears"].astype(str)
+        counts = df.groupby("surveyYears")["statsDataId"].nunique().sort_index()
+        years_found = counts.index.tolist()
         out["years"] = years_found
-        summary = []
-        for y in years_found:
-            sub = df[df["surveyYears"].astype(str) == y]
-            n = len(sub.drop_duplicates(subset=["statsDataId"]) if "statsDataId" in sub.columns else sub)
-            summary.append({"year": y, "dataset_count": n})
-        out["summary"] = summary
+        out["summary"] = [{"year": y, "dataset_count": int(n)} for y, n in counts.items()]
         out["message"] = f"検索可能な年: {', '.join(years_found)}。"
 
     if year is not None and str(year).strip():
@@ -362,8 +395,8 @@ def catalog_overview(
         if not df_year.empty and "statsField" in df_year.columns:
             counts = df_year["statsField"].astype(str).str.strip().value_counts(sort=False)
             stats_fields = [{"stats_field": k, "dataset_count": int(v)} for k, v in counts.items()]
-            areas = list_stats_areas()
-            code_to_name = {a["code"]: a.get("name", "") for a in areas.get("stats_areas", [])}
+            # Use cached mapping
+            code_to_name = _get_stats_field_code_to_name()
             for s in stats_fields:
                 s["stats_field_name"] = code_to_name.get(s["stats_field"], "")
             out["year"] = str(year)
@@ -410,10 +443,8 @@ def list_stats_fields_for_year(
     stats_fields = [{"stats_field": k, "dataset_count": int(v)} for k, v in counts.items()]
 
     if include_names:
-        areas = list_stats_areas()
-        code_to_name = {}
-        for a in areas.get("stats_areas", []):
-            code_to_name[a["code"]] = a.get("name", "")
+        # Use cached mapping
+        code_to_name = _get_stats_field_code_to_name()
         for s in stats_fields:
             s["stats_field_name"] = code_to_name.get(s["stats_field"], "")
 
@@ -448,8 +479,8 @@ def stats_field_subcategories(
     )
     groups = out.get("groups", [])
     subcategories = [{"sub_category_code": g["value"], "sub_category_name": g.get("name", g["value"]), "dataset_count": g["dataset_count"]} for g in groups]
-    areas = list_stats_areas()
-    code_to_name = {a["code"]: a.get("name", "") for a in areas.get("stats_areas", [])}
+    # Use cached mapping
+    code_to_name = _get_stats_field_code_to_name()
     return {
         "stats_field": stats_field,
         "stats_field_name": code_to_name.get(stats_field, ""),
