@@ -1,4 +1,4 @@
-"""Fetch one table (statsDataId) and save raw JSON + processed DataFrame (parquet/csv)."""
+"""Fetch one table (statsDataId); optionally save raw JSON + processed DataFrame (parquet/csv)."""
 
 import json
 import logging
@@ -23,9 +23,11 @@ def fetch_table(
     output_dir_raw: Path | str | None = None,
     output_dir_processed: Path | str | None = None,
     output_format: str = "parquet",
+    save_to_disk: bool = False,
 ) -> pd.DataFrame:
     """
-    Call getStatsData for one statsDataId; save raw JSON and processed table.
+    Call getStatsData for one statsDataId; optionally save raw JSON and processed table.
+    When save_to_disk is False (default), only fetch and process in memory; no files written.
     Returns the merged DataFrame; empty if fetch or parse failed.
     """
     from kumonjo.config import get_data_dirs
@@ -39,8 +41,9 @@ def fetch_table(
     if output_format not in ("csv", "parquet"):
         raise ValueError("output_format must be 'csv' or 'parquet'")
 
-    raw_dir.mkdir(parents=True, exist_ok=True)
-    processed_dir.mkdir(parents=True, exist_ok=True)
+    if save_to_disk:
+        raw_dir.mkdir(parents=True, exist_ok=True)
+        processed_dir.mkdir(parents=True, exist_ok=True)
 
     logger.info("Fetching statsDataId=%s year=%s", stats_data_id, year)
     try:
@@ -62,10 +65,11 @@ def fetch_table(
         logger.error("getStatsData failed for statsDataId=%s: %s", stats_data_id, e)
         return pd.DataFrame()
 
-    raw_path = raw_dir / f"{year}_statsDataId_{stats_data_id}.json"
-    with open(raw_path, "w", encoding="utf-8") as f:
-        json.dump(response, f, ensure_ascii=False, indent=2)
-    logger.info("正常に終了しました。 statsDataId=%s: raw response saved to %s", stats_data_id, raw_path)
+    if save_to_disk:
+        raw_path = raw_dir / f"{year}_statsDataId_{stats_data_id}.json"
+        with open(raw_path, "w", encoding="utf-8") as f:
+            json.dump(response, f, ensure_ascii=False, indent=2)
+        logger.info("正常に終了しました。 statsDataId=%s: raw response saved to %s", stats_data_id, raw_path)
 
     df = extract_data_from_response(response)
     if df.empty:
@@ -73,11 +77,13 @@ def fetch_table(
         return df
 
     df = reorder_df_columns(df, offset=2)
-    out_path = processed_dir / f"{year}_statsDataId_{stats_data_id}.{output_format}"
-    if output_format == "parquet":
-        df.to_parquet(out_path, index=False)
-    else:
-        df.to_csv(out_path, index=False)
-    logger.info("正常に終了しました。 statsDataId=%s: table saved to %s", stats_data_id, out_path)
+
+    if save_to_disk:
+        out_path = processed_dir / f"{year}_statsDataId_{stats_data_id}.{output_format}"
+        if output_format == "parquet":
+            df.to_parquet(out_path, index=False)
+        else:
+            df.to_csv(out_path, index=False)
+        logger.info("正常に終了しました。 statsDataId=%s: table saved to %s", stats_data_id, out_path)
 
     return df

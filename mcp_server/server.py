@@ -166,14 +166,20 @@ def retrieve_and_process(
     year: str = "2024",
     lang: str = "J",
     output_format: str = "parquet",
+    save_to_disk: bool = False,
+    max_rows_in_response: int = 2000,
 ) -> dict:
     """
-    Fetch and process one e-Stat table by statsDataId. Saves raw JSON and processed table (parquet/csv).
+    Fetch and process one e-Stat table by statsDataId.
+    When save_to_disk is False (default): data is returned in the response (columns, rows, row_count); nothing is written to disk.
+    When save_to_disk is True: raw JSON and processed table are saved; returns path to the processed file.
     stats_data_id: e.g. 0002111847 (from discover_datasets).
     year: survey year.
     lang: language code (J = Japanese).
-    output_format: parquet or csv.
-    Returns path to the processed file, row count, and status. Requires ESTAT_APP_ID in .env.
+    output_format: parquet or csv (used only when save_to_disk is True).
+    save_to_disk: if True, write to data/raw and data/processed and return path; if False, return data in response.
+    max_rows_in_response: when save_to_disk is False, include at most this many rows in the response (default 2000); row_count is always the full count.
+    Returns ok, row_count, and either (path when save_to_disk) or (columns, rows when not). Requires ESTAT_APP_ID in .env.
     """
     from kumonjo import get_api_key, get_data_dirs, fetch_table
 
@@ -189,16 +195,47 @@ def retrieve_and_process(
                 year=year,
                 lang=lang,
                 output_format=output_format,
+                save_to_disk=save_to_disk,
             )
         except Exception as e:
             return {"ok": False, "error": str(e), "path": None, "rows": 0}
         if df.empty:
             return {"ok": False, "error": "No data extracted", "path": None, "rows": 0}
-        dirs = get_data_dirs()
-        path = dirs["processed"] / lang / "statsDataId" / f"{year}_statsDataId_{stats_data_id.strip()}.{output_format}"
-        return {"ok": True, "path": str(path), "rows": len(df), "error": None}
+        n = len(df)
+        if save_to_disk:
+            dirs = get_data_dirs()
+            path = dirs["processed"] / lang / "statsDataId" / f"{year}_statsDataId_{stats_data_id.strip()}.{output_format}"
+            return {"ok": True, "path": str(path), "rows": n, "error": None}
+        # In-memory: return columns and rows (capped) for Claude to use
+        cap = max(0, max_rows_in_response)
+        sample = df.head(cap) if cap else df
+        # Convert to JSON-serializable: use list of dicts; handle non-scalar values
+        rows = []
+        for _, r in sample.iterrows():
+            rows.append({k: _json_val(v) for k, v in r.items()})
+        return {
+            "ok": True,
+            "path": None,
+            "rows": n,
+            "row_count": n,
+            "columns": list(df.columns),
+            "rows_sample": rows,
+            "truncated": n > cap if cap else False,
+            "error": None,
+        }
 
     return _log_tool_call("retrieve_and_process", _do)
+
+
+def _json_val(v) -> str | int | float | None:
+    """Coerce a cell value to a JSON-serializable type."""
+    if v is None:
+        return None
+    if isinstance(v, float) and v != v:  # NaN
+        return None
+    if isinstance(v, (str, int, float)):
+        return v
+    return str(v)
 
 
 def main() -> None:

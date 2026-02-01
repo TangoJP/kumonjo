@@ -9,7 +9,7 @@ The Kumonjo MCP server exposes tools for discovering and retrieving Japanese gov
 - **list_stats_fields_for_year(year)** – Unique stats_field (大分類コード) for a year with dataset counts (subset of catalog_overview when year is set).
 - **list_stats_areas** – Master list of 大分類・小分類 from statsfield.csv (subset of catalog_overview when include_stats_areas=True).
 - **discover_datasets** – Search datasets by year, stats_field, keyword; returns list of statsDataIds + metadata.
-- **retrieve_and_process** – Fetch and process one table by statsDataId; saves raw JSON and parquet/csv.
+- **retrieve_and_process** – Fetch and process one table by statsDataId. By default returns data in the response (no disk write); optionally save raw JSON and parquet/csv with `save_to_disk=true`.
 
 Prefer **catalog_overview** for "what years / what stats fields / overview" in one call; use **discover_datasets** to search, and **retrieve_and_process** to fetch table data.
 
@@ -125,11 +125,17 @@ Returns a list of dicts with `statsDataId`, `statistics_name`, `main_category_na
 
 ### retrieve_and_process
 
-| Parameter       | Type   | Default   | Description |
-|----------------|--------|-----------|-------------|
-| stats_data_id  | string | (required)| e.g. 0002111847 (from discover_datasets). |
-| year           | string | "2024"    | Survey year. |
-| lang           | string | "J"       | Language. |
-| output_format  | string | "parquet" | "parquet" or "csv". |
+| Parameter             | Type   | Default   | Description |
+|-----------------------|--------|-----------|-------------|
+| stats_data_id         | string | (required)| e.g. 0002111847 (from discover_datasets). |
+| year                  | string | "2024"    | Survey year. |
+| lang                  | string | "J"       | Language. |
+| output_format         | string | "parquet" | "parquet" or "csv" (used only when save_to_disk is True). |
+| save_to_disk          | bool   | false     | If true, write raw JSON and processed table to disk and return `path`. If false (default), return data in the response (no disk write). |
+| max_rows_in_response  | int    | 2000      | When save_to_disk is false, include at most this many rows in the response; `row_count` is always the full count. |
 
-Returns a dict with `ok`, `path` (to the processed file), `rows`, and `error` (if any). Requires `ESTAT_APP_ID` in the environment or `.env`.
+**When save_to_disk is false (default):** Returns `ok`, `row_count`, `columns`, `rows_sample` (list of row dicts, capped by max_rows_in_response), `truncated` (true if more rows exist), `path` (null), and `error` (if any). Data is not written to disk; use this so Claude can answer questions from the returned rows.
+
+**When save_to_disk is true:** Returns `ok`, `path` (to the processed file), `rows`, and `error` (if any).
+
+Requires `ESTAT_APP_ID` in the environment or `.env`.

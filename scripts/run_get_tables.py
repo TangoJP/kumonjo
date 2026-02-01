@@ -50,6 +50,7 @@ def main():
                 year=args.year,
                 lang=args.lang,
                 output_format=args.format,
+                save_to_disk=True,
             )
             ok += 1
         except Exception as e:
