@@ -23,29 +23,8 @@ Build a **chatbot** that uses **MCP (Model Context Protocol) tools** so users ca
   - **getStatsList**: List tables by `statsField` (classification) and `surveyYears` → returns table metadata and `statsDataId`s.
   - **getStatsData**: Get actual statistical data for a given `statsDataId` and `surveyYears` → returns JSON with dimensions (CLASS_OBJ) and values (VALUE).
 
-### 2.2 Directory Layout (current)
-```
-kumonjo/
-├── data/
-│   ├── official/          # Reference data (statsfield.csv: 大分類/小分類 codes)
-│   ├── raw/                # Gitignored; raw API JSON from retrievers
-│   └── processed/          # Gitignored; cleaned CSVs/parquet from retrievers
-├── kaiten/                 # Retrieval package + CLI scripts
-│   ├── core/
-│   │   ├── argparser.py
-│   │   └── retrievers/
-│   │       ├── core_retriever.py
-│   │       ├── stats_data_ids_retriever.py
-│   │       └── stats_data_id_table_retriever.py
-│   └── scripts/
-│       ├── run_stats_data_ids_retriever.py
-│       └── run_stats_data_id_table_retriever.py
-├── tansaku/                # Gitignored; exploratory notebooks
-│   ├── data_processing_01_retrieve_table_list.ipynb
-│   └── data_processing_02.ipynb
-├── README.md
-└── PLAN.md (this file)
-```
+### 2.2 Directory Layout (historical → see §4.1 for current)
+The codebase was reorganized: **kaiten/** was replaced by **kumonjo/** (package), **scripts/** (CLIs), and **mcp_server/** (MCP). Notebooks remain under **tansaku/** for reference only.
 
 ### 2.3 What the Existing Logic Does (Reminder)
 
@@ -54,7 +33,7 @@ kumonjo/
 - **Usage**: Scripts use **大分類コード** to decide which statsFields to call getStatsList for (e.g. "02" = 人口・世帯).
 
 #### B. Retriever 1: **List of datasets (statsDataIds) by classification**
-- **Files**: `stats_data_ids_retriever.py`, `run_stats_data_ids_retriever.py`
+- **Files** (now): `kumonjo/retrieval/list_tables.py`, `scripts/run_list_tables.py` (formerly stats_data_ids_retriever, run_stats_data_ids_retriever).
 - **Flow**:
   1. Read `data/official/statsfield.csv` → get unique 大分類コード.
   2. For each statsField and a given **year**, call **getStatsList** (SingleStatsFieldTableFetcher).
@@ -64,7 +43,7 @@ kumonjo/
 - **Reminder**: This answers “what datasets exist for this category and year?” and produces the **catalog** used by the next retriever.
 
 #### C. Retriever 2: **Actual table data for a given statsDataId**
-- **Files**: `stats_data_id_table_retriever.py`, `run_stats_data_id_table_retriever.py`
+- **Files** (now): `kumonjo/retrieval/get_table.py`, `scripts/run_get_tables.py` (formerly stats_data_id_table_retriever).
 - **Flow**:
   1. Read `data/processed/{lang}/listOfStatsFields/{year}_list_of_statsDataIds.csv`; optionally filter by `statsField`.
   2. For each statsDataId, call **getStatsData** (StatsDataIdTableRetriever).
@@ -92,22 +71,18 @@ kumonjo/
   - `extract_data(response)`: merge annotations into values (same idea as StatsDataIdTableRetriever.extract_response).
   - `extract_table_info(response)`: TABLE_INF → table metadata DataFrame; `clean_key()` for key normalization.
 
-The **kaiten** retrievers already implement most of this; the notebooks contain duplicate/exploratory versions. The plan is to treat **kaiten** as the source of truth and add any missing pieces (e.g. `extract_table_info`) into a shared module used by both CLI and MCP.
+The **kumonjo** package now holds the canonical retrieval/processing logic; the notebooks are reference only.
 
 ---
 
 ## 3. Gaps and Reorganization
 
-### 3.1 Gaps
-- **Dataset discovery for “user question”**: No tool that maps a **natural language question** (e.g. “2024年の雇用統計は？”) to recommended statsFields or statsDataIds. This needs either:
-  - Semantic search over catalog (listOfStatsFields + metadata), or
-  - Keyword/classification rules, or
-  - Both.
-- **MCP layer**: No MCP server or tools yet; current code is CLI/script-only.
-- **Analysis**: No analysis module; scope TBD.
-- **Orchestrator**: No chatbot/orchestrator; to be added with Claude Desktop integration.
-- **Package structure**: Retrievers live under `kaiten` and use relative imports/path hacks; not a clean package for MCP to call.
-- **Typo**: `kaiten/core/retrievers/__initi__.py` should be `__init__.py`.
+### 3.1 Gaps (updated)
+- **Dataset discovery for “user question”**: Keyword/catalog search is in place (discover_datasets, catalog_overview). Semantic or NL mapping (e.g. “2024年の雇用統計は？” → statsDataIds) could be added via embeddings or rules.
+- **MCP layer**: Done — MCP server and discovery/retrieval tools exist (**mcp_server/server.py**).
+- **Analysis**: No analysis module yet; scope TBD (Phase 3).
+- **Orchestrator**: To be refined — Claude Desktop uses the MCP server; custom instructions and tool descriptions can be iterated (Phase 4).
+- **Package structure**: Done — single library under **kumonjo/** used by both CLI and MCP.
 
 ### 3.2 Reorganization Goals
 - **Single library** that both CLI scripts and MCP tools can import (no duplicate logic).
@@ -118,38 +93,36 @@ The **kaiten** retrievers already implement most of this; the notebooks contain 
 
 ## 4. Proposed Direction (High Level)
 
-### 4.1 Directory Structure (Phase 1 implemented)
+### 4.1 Directory Structure (current)
 ```
 kumonjo/
-├── kumonjo/                       # Package (replaces former kaiten/)
+├── kumonjo/                       # Package
 │   ├── __init__.py
-│   ├── config.py                  # Paths, load ESTAT_APP_ID from .env
-│   ├── api/
-│   │   ├── __init__.py
-│   │   └── client.py              # getStatsList, getStatsData
+│   ├── config.py                  # Paths, ESTAT_APP_ID from .env
+│   ├── api/client.py              # getStatsList, getStatsData
 │   ├── processing/
-│   │   ├── __init__.py
-│   │   ├── clean_list.py           # clean listOfStatsFields
-│   │   └── parse_response.py     # extract_annotations_*, extract_values_raw, extract_data_from_response, extract_table_info, reorder_df_columns
-│   └── retrieval/
-│       ├── __init__.py
-│       ├── list_tables.py          # fetch_list_of_tables
-│       └── get_table.py            # fetch_table
-├── scripts/                       # Thin CLIs (use ESTAT_APP_ID from .env)
+│   │   ├── clean_list.py           # clean listOfStatsFields (notebook parity)
+│   │   └── parse_response.py      # extract_annotations_*, extract_values_raw, extract_data_from_response, reorder_df_columns
+│   ├── retrieval/
+│   │   ├── list_tables.py          # fetch_list_of_tables (+ pagination)
+│   │   ├── get_table.py            # fetch_table
+│   │   └── build_catalog.py        # consolidate raw/statsField → catalog_full.parquet
+│   └── discovery/
+│       └── catalog.py             # list_available_years, catalog_overview, load_catalog, search_catalog, list_stats_areas, list_stats_fields_for_year
+├── mcp_server/
+│   └── server.py                  # MCP tools: catalog_overview, list_stats_areas, list_stats_fields_for_year, list_available_years, discover_datasets, retrieve_and_process
+├── scripts/
 │   ├── run_list_tables.py
-│   └── run_get_tables.py
-├── data/
-│   ├── official/
-│   ├── raw/
-│   └── processed/
-├── tansaku/                       # Keep as-is; reference only
-├── .env.example                   # ESTAT_APP_ID=...
+│   ├── run_get_tables.py
+│   └── run_build_catalog.py
+├── data/ official | raw | processed (catalog_full.parquet, listOfStatsFields/, statsDataId/)
+├── tansaku/                       # Reference only; do not edit
+├── docs/MCP_CLAUDE_DESKTOP.md
+├── .env.example
 ├── requirements.txt
 ├── README.md
 └── PLAN.md
 ```
-
-`kaiten/` has been removed; all retrieval/processing logic lives in `kumonjo/`. Discovery and MCP will be added in later phases.
 
 ### 4.2 Module Responsibilities (aligned with MCP)
 - **api/client.py**: Single place for e-Stat GET calls (getStatsList, getStatsData); returns raw JSON/dict.
@@ -176,44 +149,58 @@ So discovery is an internal step the chatbot uses to *identify* which data to re
 ## 5. Phased Plan
 
 ### Phase 1: Modularize and fix
-- [ ] Introduce `src/kumonjo` (or keep `kaiten` but fix imports and package layout).
-- [ ] Fix `__initi__.py` → `__init__.py` in retrievers.
-- [ ] Extract shared logic: e-Stat client, list cleaning, response parsing (annotations + values + merge + table_info) into a single module set used by both current scripts and future MCP.
-- [ ] Ensure scripts run against current data layout (data/raw, data/processed) and optionally use a config for paths.
+- [x] **1-1** Replace `kaiten` with **kumonjo** package at repo root; fix imports and layout.
+- [x] **1-2** Extract shared logic: e-Stat client (**api/client.py**), list cleaning (**processing/clean_list.py**), response parsing (**processing/parse_response.py**) used by CLI and MCP.
+- [x] **1-3** Scripts use **config** for paths and ESTAT_APP_ID (.env); data layout data/raw, data/processed.
 
-### Phase 2: MCP server and “discovery” + “retrieval” tools
-- [x] Add MCP server (Python, stdio via FastMCP) in **mcp_server/server.py** (folder named mcp_server to avoid shadowing the `mcp` package).
-- [x] Tool **discover_datasets**: year, lang, stats_field, keyword, limit → list of statsDataIds + metadata from catalog (keyword/catalog-only). Catalog logic in **kumonjo/discovery/catalog.py**.
-- [x] Tool **retrieve_and_process**: statsDataId, year, lang, output_format → path, rows, status. Wraps kumonjo retrieval + processing.
-- [x] Document how to register this MCP server with Claude Desktop in **docs/MCP_CLAUDE_DESKTOP.md**.
+### Phase 2: Discovery (search, list, catalog — which datasets exist)
+- [x] **2-1** MCP server (Python, stdio via FastMCP) in **mcp_server/server.py**.
+- [x] **2-2** **catalog_overview**: years, dataset counts, optional stats_fields for a year, optional stats_areas (single lookup).
+- [x] **2-3** **list_available_years**, **list_stats_areas**, **list_stats_fields_for_year**: optional alternatives to catalog_overview.
+- [x] **2-4** **discover_datasets**: year, lang, stats_field, keyword, limit → list of statsDataIds + metadata from catalog (uses catalog_full.parquet when present).
+- [x] **2-5** Consolidated catalog: **build_catalog** from raw/J/statsField → **catalog_full.parquet**; discovery uses it for fast lookups.
+- [x] **2-6** Document MCP + Claude Desktop in **docs/MCP_CLAUDE_DESKTOP.md**.
+- [ ] **2-7** **Search by stats_field with subcategories**: Within 大分類, return dataset counts by 小分類 (e.g. 人口・世帯 → 人口, 人口移動, 世帯).
+- [ ] **2-8** **List datasets by government organization**: Filter/aggregate by 府省 (e.g. 総務省, 厚生労働省); dataset counts per gov_org.
+- [ ] **2-9** **Time-series data discovery**: Find statistics available across multiple years (e.g. same statistics_name 2020–2024).
+- [ ] **2-10** (TBD) **Similar-dataset search**: Suggest related datasets by statistics name or keyword (e.g. embeddings or e-Stat metadata).
+- [ ] **2-11** (TBD) **Search history & favorites**: Persist search conditions or dataset IDs for re-use.
 
-### Phase 3: Analysis tool and scope
-- [ ] Define analysis scope (e.g. summary stats, time series, filters).
-- [ ] Implement **analyze** MCP tool that takes a table (or path) + analysis type and returns result.
-- [ ] Optionally add **extract_table_info** to retrieval/processing and expose as a small “metadata” tool.
+### Phase 3: Dataset retrieval (fetch, preview, metadata — actual data for discovered statsDataIds)
+- [x] **3-1** **retrieve_and_process**: statsDataId, year, lang, output_format → path, rows, status.
+- [ ] **3-2** (TBD) **Dataset preview**: Before retrieve: column names, row count, sample rows.
+- [ ] **3-3** **Detailed dataset metadata**: Survey frequency (月次/年次), last updated, data period from e-Stat API.
+- [ ] **3-4** (TBD) **Bulk retrieval**: Multiple statsDataIds in one call for batch/time-series download.
+- [ ] **3-5** (TBD) **Dataset comparison**: Compare multiple datasets (name, size, column count) side-by-side.
 
-### Phase 4: Orchestrator and UX
-- [ ] Configure Claude Desktop to use the MCP server; optional custom instructions for “use discover → retrieve → analyze” flow.
-- [ ] Iterate on prompts and tool descriptions (in Japanese/English) so the model chooses the right tools and interprets government data correctly.
+### Phase 4: Analysis tool and scope
+- [ ] **4-1** Define analysis scope (e.g. summary stats, time series, filters).
+- [ ] **4-2** Implement **analyze** MCP tool that takes a table (or path) + analysis type and returns result.
+- [ ] **4-3** Optionally add **extract_table_info** to retrieval/processing and expose as a small “metadata” tool.
+
+### Phase 5: Orchestrator and UX
+- [ ] **5-1** Configure Claude Desktop to use the MCP server; optional custom instructions for “use discover → retrieve → analyze” flow.
+- [ ] **5-2** Iterate on prompts and tool descriptions (in Japanese/English) so the model chooses the right tools and interprets government data correctly.
 
 ---
 
-## 6. Data Conventions (reminder)
+## 6. Data Conventions
 
 - **Lang**: `J` (Japanese) by default.
 - **Paths**:
   - Raw: `data/raw/{lang}/statsField/`, `data/raw/{lang}/statsDataId/`.
-  - Processed: `data/processed/{lang}/listOfStatsFields/`, `data/processed/{lang}/statsDataId/`.
-- **Catalog CSV**: `{year}_list_of_statsDataIds.csv` with columns including statsDataId, statistics_name, title, statsField, surveyYears, gov_org_name, main_category_name, sub_category_name, etc.
+  - Processed: `data/processed/{lang}/listOfStatsFields/`, `data/processed/{lang}/statsDataId/`, `data/processed/{lang}/catalog_full.parquet`.
+- **Catalog**: Per-year CSV `{year}_list_of_statsDataIds.csv`; consolidated **catalog_full.parquet** (from run_build_catalog) used by MCP discovery when present. Columns include statsDataId, statistics_name, title, statsField, surveyYears, gov_org_name, main_category_name, sub_category_name, etc.
 - **Table output**: One file per statsDataId, e.g. `{year}_statsDataId_{id}.parquet`, with dimension labels merged (e.g. area_name, time_name, value).
 
 ---
 
 ## 7. Next Steps
 
-1. Confirm or adjust the directory structure (e.g. keep `kaiten` vs. move to `src/kumonjo`).
-2. Implement Phase 1 (modularize + fix typo).
-3. Add a minimal MCP server and the two tools (discover_datasets, retrieve_and_process), then test with Claude Desktop.
-4. Define and implement the analysis tool (Phase 3) in a later iteration.
+1. Phase 1 and Phase 2 (discovery core) are done. Refine tool descriptions and Claude Desktop instructions as needed.
+2. Phase 3 (dataset retrieval): 3-1 done; implement 3-2–3-5 (preview, metadata, bulk, comparison) as needed.
+3. Phase 2: implement remaining discovery items 2-7–2-11 (subcategories, gov_org, time-series, similar-dataset, history) as needed.
+4. Phase 4 (analysis): define scope and implement analyze tool when ready.
+5. Phase 5: iterate on orchestrator prompts and UX.
 
-This plan is intended to be iterated: once the first version of the plan is in place, we can refine phases and file layout as you go.
+This plan is intended to be iterated as the project evolves.
