@@ -127,7 +127,7 @@ kumonjo/
 ### 4.2 Module Responsibilities (aligned with MCP)
 - **api/client.py**: Single place for e-Stat GET calls (getStatsList, getStatsData); returns raw JSON/dict.
 - **retrieval/list_tables.py**: Uses client + processing/clean_list → catalog DataFrame; can write to data/processed.
-- **retrieval/get_table.py**: Uses client + processing/parse_response → one DataFrame per statsDataId; can write raw + processed.
+- **retrieval/get_table.py**: Uses client + processing/parse_response → one DataFrame per statsDataId; optionally writes raw + processed (Phase 3 Option B: default in-memory only).
 - **discovery/catalog.py**: Load listOfStatsFields from disk; filter by year, statsField, keyword (e.g. in statistics_name, title).
 - **discovery/search.py**: (Later) Map Japanese user question to statsField or statsDataIds (embeddings or rules).
 - **MCP tools**: Call these modules and return results in the format the MCP protocol expects (e.g. JSON or file refs).
@@ -138,7 +138,7 @@ kumonjo/
 1. User asks a question in natural language (e.g. in Japanese: 「2024年の雇用統計は？」).
 2. **Discover**: Orchestrator calls MCP tool “discover_datasets” with the question (and optional year/category); tool returns a short list of relevant statsDataIds + metadata.
 3. **Optional clarification**: Chatbot may show the user a few dataset options and ask which to use, or proceed with the top match(es).
-4. **Retrieve**: Orchestrator calls “retrieve_and_process” for the chosen statsDataId(s); returns table(s) or paths.
+4. **Retrieve**: Orchestrator calls “retrieve_and_process” for the chosen statsDataId(s); by default returns table data in the response (columns, rows/sample, row_count) so the chatbot can answer questions without disk; optionally can save to disk and return a path (Phase 3 Option B).
 5. **Analyze**: If needed, “analyze” runs on the retrieved table(s) (scope TBD).
 6. Orchestrator summarizes and answers the user using tool outputs.
 
@@ -167,7 +167,11 @@ So discovery is an internal step the chatbot uses to *identify* which data to re
 - [ ] **2-11** (TBD) **Search history & favorites**: Persist search conditions or dataset IDs for re-use.
 
 ### Phase 3: Dataset retrieval (fetch, preview, metadata — actual data for discovered statsDataIds)
-- [x] **3-1** **retrieve_and_process**: statsDataId, year, lang, output_format → path, rows, status.
+
+**Data storage policy**: Only the **catalog** (list of datasets, e.g. catalog_full.parquet) is persisted to disk by default. Retrieved **dataset contents** (raw JSON, processed parquet/csv per statsDataId) are **not** stored on disk unless explicitly requested (Option B below).
+
+- [x] **3-1** **retrieve_and_process**: statsDataId, year, lang, output_format → path, rows, status. *(Current: always writes to disk; to be updated per 3-1a.)*
+- [ ] **3-1a** **Option B — Optional disk write for retrieved datasets**: Add a parameter (e.g. `save_to_disk: bool = False`). When `False` (default): fetch and process in memory only; **return data in the tool response** (e.g. `columns`, `rows` or `sample_rows`, `row_count`) so Claude can answer questions without reading a file; do **not** write to `data/raw/.../statsDataId/` or `data/processed/.../statsDataId/`; omit or set `path` to null. When `True`: keep current behavior (write raw + processed, return local filesystem `path`). Align `fetch_table()` and CLI scripts with this policy (e.g. optional write).
 - [ ] **3-2** (TBD) **Dataset preview**: Before retrieve: column names, row count, sample rows.
 - [ ] **3-3** **Detailed dataset metadata**: Survey frequency (月次/年次), last updated, data period from e-Stat API.
 - [ ] **3-4** (TBD) **Bulk retrieval**: Multiple statsDataIds in one call for batch/time-series download.
@@ -187,18 +191,20 @@ So discovery is an internal step the chatbot uses to *identify* which data to re
 ## 6. Data Conventions
 
 - **Lang**: `J` (Japanese) by default.
-- **Paths**:
+- **What we persist to disk**:
+  - **Catalog (list of datasets)**: Yes. Per-year CSV and consolidated **catalog_full.parquet** (from run_build_catalog); discovery uses these. Columns include statsDataId, statistics_name, title, statsField, surveyYears, gov_org_name, main_category_name, sub_category_name, etc.
+  - **Retrieved dataset contents**: Optional (Phase 3 Option B). By default we do **not** store raw JSON or processed table files for retrieved statsDataIds; retrieval returns data in the tool response. When `save_to_disk=True`, we write to the paths below.
+- **Paths** (when saving retrieved datasets is enabled):
   - Raw: `data/raw/{lang}/statsField/`, `data/raw/{lang}/statsDataId/`.
   - Processed: `data/processed/{lang}/listOfStatsFields/`, `data/processed/{lang}/statsDataId/`, `data/processed/{lang}/catalog_full.parquet`.
-- **Catalog**: Per-year CSV `{year}_list_of_statsDataIds.csv`; consolidated **catalog_full.parquet** (from run_build_catalog) used by MCP discovery when present. Columns include statsDataId, statistics_name, title, statsField, surveyYears, gov_org_name, main_category_name, sub_category_name, etc.
-- **Table output**: One file per statsDataId, e.g. `{year}_statsDataId_{id}.parquet`, with dimension labels merged (e.g. area_name, time_name, value).
+- **Table output** (when saved): One file per statsDataId, e.g. `{year}_statsDataId_{id}.parquet`, with dimension labels merged (e.g. area_name, time_name, value).
 
 ---
 
 ## 7. Next Steps
 
 1. Phase 1 and Phase 2 (discovery core) are done. Refine tool descriptions and Claude Desktop instructions as needed.
-2. Phase 3 (dataset retrieval): 3-1 done; implement 3-2–3-5 (preview, metadata, bulk, comparison) as needed.
+2. Phase 3 (dataset retrieval): 3-1 done; implement **3-1a (Option B)** so retrieval defaults to in-memory and returns data in the response; then 3-2–3-5 (preview, metadata, bulk, comparison) as needed.
 3. Phase 2: implement remaining discovery items 2-7–2-11 (subcategories, gov_org, time-series, similar-dataset, history) as needed.
 4. Phase 4 (analysis): define scope and implement analyze tool when ready.
 5. Phase 5: iterate on orchestrator prompts and UX.
