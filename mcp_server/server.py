@@ -6,7 +6,10 @@ Or: python -m mcp_server.server
 Uses stdio transport by default (for Claude Desktop).
 """
 
+import json
+import logging
 import sys
+import time
 from pathlib import Path
 
 # Project root = parent of mcp_server/
@@ -15,6 +18,33 @@ if str(_root) not in sys.path:
     sys.path.insert(0, str(_root))
 
 from mcp.server.fastmcp import FastMCP
+
+# Log to stderr so stdio remains clean for JSON-RPC
+_logger = logging.getLogger("kumonjo.mcp")
+_logger.setLevel(logging.INFO)
+if not _logger.handlers:
+    _h = logging.StreamHandler(sys.stderr)
+    _h.setFormatter(logging.Formatter("%(asctime)s [%(name)s] %(message)s"))
+    _logger.addHandler(_h)
+
+
+def _log_tool_call(tool_name: str, thunk):
+    """Run thunk(), log start/end and response size. Returns thunk result."""
+    _logger.info("tool=%s start", tool_name)
+    start = time.perf_counter()
+    try:
+        result = thunk()
+        elapsed = time.perf_counter() - start
+        try:
+            size = len(json.dumps(result, ensure_ascii=False))
+        except (TypeError, ValueError):
+            size = -1
+        _logger.info("tool=%s end elapsed_sec=%.3f response_size=%d", tool_name, elapsed, size)
+        return result
+    except Exception as e:
+        elapsed = time.perf_counter() - start
+        _logger.exception("tool=%s error after %.3fs: %s", tool_name, elapsed, e)
+        raise
 
 mcp = FastMCP(
     "Kumonjo",
@@ -38,7 +68,7 @@ def catalog_overview(
     """
     from kumonjo.discovery.catalog import catalog_overview as _catalog_overview
 
-    return _catalog_overview(lang=lang, year=year, include_stats_areas=include_stats_areas)
+    return _log_tool_call("catalog_overview", lambda: _catalog_overview(lang=lang, year=year, include_stats_areas=include_stats_areas))
 
 
 @mcp.tool()
@@ -50,7 +80,7 @@ def list_stats_areas() -> dict:
     """
     from kumonjo.discovery.catalog import list_stats_areas as _list_stats_areas
 
-    return _list_stats_areas()
+    return _log_tool_call("list_stats_areas", _list_stats_areas)
 
 
 @mcp.tool()
@@ -69,7 +99,7 @@ def list_stats_fields_for_year(
     """
     from kumonjo.discovery.catalog import list_stats_fields_for_year as _list_stats_fields_for_year
 
-    return _list_stats_fields_for_year(year=year, lang=lang, include_names=include_names)
+    return _log_tool_call("list_stats_fields_for_year", lambda: _list_stats_fields_for_year(year=year, lang=lang, include_names=include_names))
 
 
 @mcp.tool()
@@ -89,7 +119,7 @@ def time_series_discovery(
     """
     from kumonjo.discovery.catalog import time_series_discovery as _time_series_discovery
 
-    return _time_series_discovery(year_start=year_start, year_end=year_end, lang=lang, min_years=min_years, limit=limit)
+    return _log_tool_call("time_series_discovery", lambda: _time_series_discovery(year_start=year_start, year_end=year_end, lang=lang, min_years=min_years, limit=limit))
 
 
 @mcp.tool()
@@ -103,7 +133,7 @@ def list_available_years(lang: str = "J") -> dict:
     """
     from kumonjo.discovery.catalog import list_available_years as _list_available_years
 
-    return _list_available_years(lang=lang)
+    return _log_tool_call("list_available_years", lambda: _list_available_years(lang=lang))
 
 
 @mcp.tool()
@@ -127,13 +157,7 @@ def discover_datasets(
     """
     from kumonjo.discovery.catalog import search_catalog
 
-    return search_catalog(
-        year=year,
-        lang=lang,
-        stats_field=stats_field,
-        keyword=keyword,
-        limit=limit,
-    )
+    return _log_tool_call("discover_datasets", lambda: search_catalog(year=year, lang=lang, stats_field=stats_field, keyword=keyword, limit=limit))
 
 
 @mcp.tool()
@@ -153,33 +177,28 @@ def retrieve_and_process(
     """
     from kumonjo import get_api_key, get_data_dirs, fetch_table
 
-    try:
-        app_id = get_api_key()
-    except ValueError as e:
-        return {"ok": False, "error": str(e), "path": None, "rows": 0}
+    def _do() -> dict:
+        try:
+            app_id = get_api_key()
+        except ValueError as e:
+            return {"ok": False, "error": str(e), "path": None, "rows": 0}
+        try:
+            df = fetch_table(
+                app_id=app_id,
+                stats_data_id=stats_data_id.strip(),
+                year=year,
+                lang=lang,
+                output_format=output_format,
+            )
+        except Exception as e:
+            return {"ok": False, "error": str(e), "path": None, "rows": 0}
+        if df.empty:
+            return {"ok": False, "error": "No data extracted", "path": None, "rows": 0}
+        dirs = get_data_dirs()
+        path = dirs["processed"] / lang / "statsDataId" / f"{year}_statsDataId_{stats_data_id.strip()}.{output_format}"
+        return {"ok": True, "path": str(path), "rows": len(df), "error": None}
 
-    try:
-        df = fetch_table(
-            app_id=app_id,
-            stats_data_id=stats_data_id.strip(),
-            year=year,
-            lang=lang,
-            output_format=output_format,
-        )
-    except Exception as e:
-        return {"ok": False, "error": str(e), "path": None, "rows": 0}
-
-    if df.empty:
-        return {"ok": False, "error": "No data extracted", "path": None, "rows": 0}
-
-    dirs = get_data_dirs()
-    path = dirs["processed"] / lang / "statsDataId" / f"{year}_statsDataId_{stats_data_id.strip()}.{output_format}"
-    return {
-        "ok": True,
-        "path": str(path),
-        "rows": len(df),
-        "error": None,
-    }
+    return _log_tool_call("retrieve_and_process", _do)
 
 
 def main() -> None:

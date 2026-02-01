@@ -2,11 +2,25 @@
 
 import functools
 import re
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from pathlib import Path
 
 import pandas as pd
 
 from kumonjo.config import get_data_dirs
+
+# Default timeout for catalog I/O and aggregation (seconds). Prevents hanging when used via MCP.
+DEFAULT_CATALOG_TIMEOUT_SECONDS = 10.0
+
+
+def _run_with_timeout(seconds: float, thunk, timeout_error_result):
+    """Run thunk() in a thread; return its result or timeout_error_result if timeout."""
+    with ThreadPoolExecutor(max_workers=1) as ex:
+        future = ex.submit(thunk)
+        try:
+            return future.result(timeout=seconds)
+        except FuturesTimeoutError:
+            return timeout_error_result
 
 
 # ---------------------------------------------------------------------------
@@ -106,68 +120,70 @@ def _get_consolidated_path(lang: str, processed_dir: Path | None) -> Path | None
 def list_available_years(
     lang: str = "J",
     processed_dir: Path | str | None = None,
+    timeout_seconds: float = DEFAULT_CATALOG_TIMEOUT_SECONDS,
 ) -> dict:
     """
     List years for which a catalog exists locally (so discover_datasets can be used).
     Prefers consolidated catalog_full.parquet when present; else scans listOfStatsFields/.
+    timeout_seconds: max time for I/O; on timeout returns error dict with timeout=True.
     Returns dict with years (sorted), lang, and optional per-year dataset_count.
     """
-    dirs = get_data_dirs()
-    base = Path(processed_dir) if processed_dir else dirs["processed"]
+    timeout_error = {"years": [], "lang": lang, "summary": [], "message": f"操作がタイムアウトしました。（{timeout_seconds:.0f}秒）", "timeout": True}
 
-    # Prefer consolidated catalog: read only columns needed for years + counts (less I/O)
-    consolidated = _get_consolidated_path(lang, base)
-    if consolidated is not None:
-        try:
-            df = pd.read_parquet(consolidated, columns=["surveyYears", "statsDataId"])
-            if df.empty or "surveyYears" not in df.columns:
-                years_found = []
-                summary = []
-            else:
-                # Use groupby for efficient counting (single pass)
-                df["surveyYears"] = df["surveyYears"].astype(str)
-                counts = df.groupby("surveyYears")["statsDataId"].nunique().sort_index()
-                years_found = counts.index.tolist()
-                summary = [{"year": y, "dataset_count": int(n)} for y, n in counts.items()]
-            return {
-                "years": years_found,
-                "lang": lang,
-                "summary": summary,
-                "message": f"検索可能な年: {', '.join(years_found)}。各年について discover_datasets でデータセットを検索できます。" if years_found else "カタログが空です。",
-            }
-        except Exception:
-            pass
-
-    # Fallback: scan per-year CSV files
-    catalog_dir = base / lang / "listOfStatsFields"
-    if not catalog_dir.exists():
-        return {"years": [], "lang": lang, "summary": [], "message": "No catalog directory found."}
-
-    years_found = []
-    summary = []
-    for p in catalog_dir.iterdir():
-        if not p.is_file():
-            continue
-        m = _CATALOG_PATTERN.match(p.name)
-        if m:
-            year = m.group(1)
-            years_found.append(year)
+    def _body() -> dict:
+        dirs = get_data_dirs()
+        base = Path(processed_dir) if processed_dir else dirs["processed"]
+        consolidated = _get_consolidated_path(lang, base)
+        if consolidated is not None:
             try:
-                df = pd.read_csv(p, dtype="object", header=0)
-                n = len(df.drop_duplicates(subset=["statsDataId"]) if "statsDataId" in df.columns else df)
-                summary.append({"year": year, "dataset_count": n})
+                df = pd.read_parquet(consolidated, columns=["surveyYears", "statsDataId"])
+                if df.empty or "surveyYears" not in df.columns:
+                    years_found = []
+                    summary = []
+                else:
+                    df["surveyYears"] = df["surveyYears"].astype(str)
+                    counts = df.groupby("surveyYears")["statsDataId"].nunique().sort_index()
+                    years_found = counts.index.tolist()
+                    summary = [{"year": y, "dataset_count": int(n)} for y, n in counts.items()]
+                return {
+                    "years": years_found,
+                    "lang": lang,
+                    "summary": summary,
+                    "message": f"検索可能な年: {', '.join(years_found)}。各年について discover_datasets でデータセットを検索できます。" if years_found else "カタログが空です。",
+                }
             except Exception:
-                summary.append({"year": year, "dataset_count": None})
+                pass
 
-    years_found.sort()
-    summary.sort(key=lambda x: x["year"])
+        catalog_dir = base / lang / "listOfStatsFields"
+        if not catalog_dir.exists():
+            return {"years": [], "lang": lang, "summary": [], "message": "No catalog directory found."}
 
-    return {
-        "years": years_found,
-        "lang": lang,
-        "summary": summary,
-        "message": f"検索可能な年: {', '.join(years_found)}。各年について discover_datasets でデータセットを検索できます。" if years_found else "カタログがまだありません。scripts/run_list_tables.py で取得し、scripts/run_build_catalog.py で統合カタログを生成してください。",
-    }
+        years_found = []
+        summary = []
+        for p in catalog_dir.iterdir():
+            if not p.is_file():
+                continue
+            m = _CATALOG_PATTERN.match(p.name)
+            if m:
+                year = m.group(1)
+                years_found.append(year)
+                try:
+                    df = pd.read_csv(p, dtype="object", header=0)
+                    n = len(df.drop_duplicates(subset=["statsDataId"]) if "statsDataId" in df.columns else df)
+                    summary.append({"year": year, "dataset_count": n})
+                except Exception:
+                    summary.append({"year": year, "dataset_count": None})
+
+        years_found.sort()
+        summary.sort(key=lambda x: x["year"])
+        return {
+            "years": years_found,
+            "lang": lang,
+            "summary": summary,
+            "message": f"検索可能な年: {', '.join(years_found)}。各年について discover_datasets でデータセットを検索できます。" if years_found else "カタログがまだありません。scripts/run_list_tables.py で取得し、scripts/run_build_catalog.py で統合カタログを生成してください。",
+        }
+
+    return _run_with_timeout(timeout_seconds, _body, timeout_error)
 
 
 # Columns that can be used for aggregation (group-by). Must exist in catalog parquet.
@@ -192,12 +208,14 @@ def catalog_aggregate(
     limit: int = 50,
     include_display_name: bool = True,
     processed_dir: Path | str | None = None,
+    timeout_seconds: float = DEFAULT_CATALOG_TIMEOUT_SECONDS,
 ) -> dict:
     """
     Aggregate catalog by a single attribute: group by `by` and count datasets (statsDataId).
     When year is set, uses the same discover path as search_catalog (load_catalog via _get_catalog_df)
     then aggregates over that DataFrame (discover then aggregate). When year is None, uses
     _load_full_catalog with predicate pushdown.
+    timeout_seconds: max time for I/O and aggregation; on timeout returns error dict with timeout=True.
     by: one of statsField, gov_org_code, gov_org_name, sub_category_code, sub_category_name,
         statistics_name, stat_name_code, surveyYears.
     year: if set, only rows with surveyYears == year (predicate pushdown).
@@ -222,86 +240,98 @@ def catalog_aggregate(
         elif by == "sub_category_code":
             name_col = "sub_category_name"
 
-    # When year is set, use discover path (load_catalog via _get_catalog_df) then aggregate.
-    # When year is None, use _load_full_catalog with predicate pushdown.
-    if year is not None and str(year).strip():
-        df = _get_catalog_df(
-            year=str(year),
-            lang=lang,
-            filter_column=filter_column,
-            filter_value=filter_value,
-            processed_dir=processed_dir,
+    timeout_error = {
+        "by": by,
+        "year": year,
+        "filter_column": filter_column,
+        "filter_value": filter_value,
+        "lang": lang,
+        "groups": [],
+        "message": f"操作がタイムアウトしました。（{timeout_seconds:.0f}秒）",
+        "timeout": True,
+    }
+
+    def _body() -> dict:
+        # When year is set, use discover path (load_catalog via _get_catalog_df) then aggregate.
+        # When year is None, use _load_full_catalog with predicate pushdown.
+        if year is not None and str(year).strip():
+            df = _get_catalog_df(
+                year=str(year),
+                lang=lang,
+                filter_column=filter_column,
+                filter_value=filter_value,
+                processed_dir=processed_dir,
+            )
+            if not df.empty:
+                cols = [c for c in [by, "statsDataId"] + ([name_col] if name_col and name_col in df.columns else []) if c in df.columns]
+                df = df[cols].copy()
+        else:
+            cols = [by, "statsDataId"]
+            if filter_column and filter_column not in cols:
+                cols.append(filter_column)
+            if filter_column and filter_column == "surveyYears":
+                if "surveyYears" not in cols:
+                    cols.append("surveyYears")
+            if name_col and name_col not in cols:
+                cols.append(name_col)
+            filters: list[tuple[str, str, str | int]] = []
+            if filter_column and filter_value is not None and str(filter_value).strip():
+                filters.append((filter_column, "==", str(filter_value).strip()))
+            df = _load_full_catalog(
+                lang=lang,
+                processed_dir=processed_dir,
+                columns=cols,
+                filters=filters if filters else None,
+            )
+        if df.empty:
+            return {
+                "by": by,
+                "year": year,
+                "filter_column": filter_column,
+                "filter_value": filter_value,
+                "lang": lang,
+                "groups": [],
+                "message": "カタログがありません。run_build_catalog を実行してください。" if not year else "該当するデータがありません。",
+            }
+        if by not in df.columns:
+            return {"by": by, "year": year, "lang": lang, "groups": [], "message": f"列 '{by}' がありません。"}
+        agg_dict = {"dataset_count": ("statsDataId", "nunique")} if "statsDataId" in df.columns else {"dataset_count": (by, "count")}
+        if name_col and name_col in df.columns and name_col != by:
+            agg_dict["_name"] = (name_col, "first")
+        counts = df.groupby(by, dropna=False).agg(**agg_dict).reset_index()
+        counts = counts.sort_values("dataset_count", ascending=False).head(limit)
+        values = counts[by].map(lambda x: "" if pd.isna(x) else str(x))
+        cnts = counts["dataset_count"].astype(int)
+        names = (
+            counts["_name"].map(lambda x: "" if pd.isna(x) else str(x))
+            if "_name" in counts.columns
+            else values
         )
-        if not df.empty:
-            cols = [c for c in [by, "statsDataId"] + ([name_col] if name_col and name_col in df.columns else []) if c in df.columns]
-            df = df[cols].copy()
-    else:
-        cols = [by, "statsDataId"]
-        if filter_column and filter_column not in cols:
-            cols.append(filter_column)
-        if filter_column and filter_column == "surveyYears":
-            if "surveyYears" not in cols:
-                cols.append("surveyYears")
-        if name_col and name_col not in cols:
-            cols.append(name_col)
-        filters: list[tuple[str, str, str | int]] = []
-        if filter_column and filter_value is not None and str(filter_value).strip():
-            filters.append((filter_column, "==", str(filter_value).strip()))
-        df = _load_full_catalog(
-            lang=lang,
-            processed_dir=processed_dir,
-            columns=cols,
-            filters=filters if filters else None,
-        )
-    if df.empty:
+        groups = [
+            {"value": v, "dataset_count": c, "name": n or v}
+            for v, c, n in zip(values, cnts, names)
+        ]
+        if by == "statsField" and include_display_name:
+            code_to_name = _get_stats_field_code_to_name()
+            for g in groups:
+                g["name"] = code_to_name.get(g["value"], g.get("name", g["value"]))
+        total = sum(g["dataset_count"] for g in groups)
+        msg = f"by={by}: {len(groups)} 件、データセット合計 {total} 件。"
+        if year:
+            msg += f"（{year}年）"
+        if filter_column and filter_value:
+            msg += f" 条件: {filter_column}={filter_value}"
         return {
             "by": by,
             "year": year,
             "filter_column": filter_column,
             "filter_value": filter_value,
             "lang": lang,
-            "groups": [],
-            "message": "カタログがありません。run_build_catalog を実行してください。" if not year else "該当するデータがありません。",
+            "groups": groups,
+            "message": msg,
         }
-    if by not in df.columns:
-        return {"by": by, "year": year, "lang": lang, "groups": [], "message": f"列 '{by}' がありません。"}
-    agg_dict = {"dataset_count": ("statsDataId", "nunique")} if "statsDataId" in df.columns else {"dataset_count": (by, "count")}
-    if name_col and name_col in df.columns and name_col != by:
-        agg_dict["_name"] = (name_col, "first")
-    counts = df.groupby(by, dropna=False).agg(**agg_dict).reset_index()
-    counts = counts.sort_values("dataset_count", ascending=False).head(limit)
-    # Build groups without iterrows (faster)
-    values = counts[by].map(lambda x: "" if pd.isna(x) else str(x))
-    cnts = counts["dataset_count"].astype(int)
-    names = (
-        counts["_name"].map(lambda x: "" if pd.isna(x) else str(x))
-        if "_name" in counts.columns
-        else values
-    )
-    groups = [
-        {"value": v, "dataset_count": c, "name": n or v}
-        for v, c, n in zip(values, cnts, names)
-    ]
-    if by == "statsField" and include_display_name:
-        # Use cached mapping
-        code_to_name = _get_stats_field_code_to_name()
-        for g in groups:
-            g["name"] = code_to_name.get(g["value"], g.get("name", g["value"]))
-    total = sum(g["dataset_count"] for g in groups)
-    msg = f"by={by}: {len(groups)} 件、データセット合計 {total} 件。"
-    if year:
-        msg += f"（{year}年）"
-    if filter_column and filter_value:
-        msg += f" 条件: {filter_column}={filter_value}"
-    return {
-        "by": by,
-        "year": year,
-        "filter_column": filter_column,
-        "filter_value": filter_value,
-        "lang": lang,
-        "groups": groups,
-        "message": msg,
-    }
+
+    return _run_with_timeout(timeout_seconds, _body, timeout_error)
 
 
 @functools.lru_cache(maxsize=16)
@@ -428,75 +458,78 @@ def catalog_overview(
     year: str | None = None,
     include_stats_areas: bool = False,
     processed_dir: Path | str | None = None,
+    timeout_seconds: float = DEFAULT_CATALOG_TIMEOUT_SECONDS,
 ) -> dict:
     """
     Single entry point for catalog lookup: years, dataset counts, and optionally stats fields per year or master stats areas.
     Use when the user asks "何年分のデータが検索できる？", "2024年の統計分野全て", or "overview of what's available".
+    timeout_seconds: max time for I/O; on timeout returns error dict with timeout=True.
     - year=None: returns years (sorted) and dataset_count per year; optionally stats_areas from statsfield.csv.
     - year set: returns years_available (context), and for that year: stats_fields with dataset_count and names; optionally stats_areas.
     """
-    base = Path(processed_dir) if processed_dir else get_data_dirs()["processed"]
-    consolidated = _get_consolidated_path(lang, base)
-    out: dict = {"lang": lang, "years": [], "summary": [], "message": ""}
+    timeout_error = {"lang": lang, "years": [], "summary": [], "message": f"操作がタイムアウトしました。（{timeout_seconds:.0f}秒）", "timeout": True}
 
-    df = pd.DataFrame()
-    if consolidated and consolidated.exists():
-        try:
-            df = pd.read_parquet(consolidated, columns=["surveyYears", "statsDataId", "statsField"])
-        except Exception:
-            pass
+    def _body() -> dict:
+        base = Path(processed_dir) if processed_dir else get_data_dirs()["processed"]
+        consolidated = _get_consolidated_path(lang, base)
+        out: dict = {"lang": lang, "years": [], "summary": [], "message": ""}
 
-    if df.empty:
-        # Fallback: years from listOfStatsFields filenames
-        catalog_dir = base / lang / "listOfStatsFields"
-        if catalog_dir.exists():
-            years_found = []
-            for p in catalog_dir.iterdir():
-                m = _CATALOG_PATTERN.match(p.name) if p.is_file() else None
-                if m:
-                    years_found.append(m.group(1))
-            years_found.sort()
-            if years_found:
-                out["years"] = years_found
-                out["summary"] = [{"year": y, "dataset_count": None} for y in years_found]
-                out["message"] = f"検索可能な年: {', '.join(years_found)}。（catalog_full.parquet が未作成のため件数は不明。run_build_catalog を実行してください。）"
+        df = pd.DataFrame()
+        if consolidated and consolidated.exists():
+            try:
+                df = pd.read_parquet(consolidated, columns=["surveyYears", "statsDataId", "statsField"])
+            except Exception:
+                pass
 
-    if not df.empty and "surveyYears" in df.columns:
-        # Use groupby for efficient counting (single pass)
-        df["surveyYears"] = df["surveyYears"].astype(str)
-        counts = df.groupby("surveyYears")["statsDataId"].nunique().sort_index()
-        years_found = counts.index.tolist()
-        out["years"] = years_found
-        out["summary"] = [{"year": y, "dataset_count": int(n)} for y, n in counts.items()]
-        out["message"] = f"検索可能な年: {', '.join(years_found)}。"
+        if df.empty:
+            catalog_dir = base / lang / "listOfStatsFields"
+            if catalog_dir.exists():
+                years_found = []
+                for p in catalog_dir.iterdir():
+                    m = _CATALOG_PATTERN.match(p.name) if p.is_file() else None
+                    if m:
+                        years_found.append(m.group(1))
+                years_found.sort()
+                if years_found:
+                    out["years"] = years_found
+                    out["summary"] = [{"year": y, "dataset_count": None} for y in years_found]
+                    out["message"] = f"検索可能な年: {', '.join(years_found)}。（catalog_full.parquet が未作成のため件数は不明。run_build_catalog を実行してください。）"
 
-    if year is not None and str(year).strip():
-        # Add stats_fields for this year (same as list_stats_fields_for_year)
-        df_year = load_catalog(year=str(year), lang=lang, processed_dir=processed_dir)
-        if not df_year.empty and "statsField" in df_year.columns:
-            counts = df_year["statsField"].astype(str).str.strip().value_counts(sort=False)
-            stats_fields = [{"stats_field": k, "dataset_count": int(v)} for k, v in counts.items()]
-            # Use cached mapping
-            code_to_name = _get_stats_field_code_to_name()
-            for s in stats_fields:
-                s["stats_field_name"] = code_to_name.get(s["stats_field"], "")
-            out["year"] = str(year)
-            out["stats_fields"] = stats_fields
-            out["message"] = (out.get("message", "") + f" {year}年: 統計分野 {len(stats_fields)} 件。").strip()
+        if not df.empty and "surveyYears" in df.columns:
+            df["surveyYears"] = df["surveyYears"].astype(str)
+            counts = df.groupby("surveyYears")["statsDataId"].nunique().sort_index()
+            years_found = counts.index.tolist()
+            out["years"] = years_found
+            out["summary"] = [{"year": y, "dataset_count": int(n)} for y, n in counts.items()]
+            out["message"] = f"検索可能な年: {', '.join(years_found)}。"
+
+        if year is not None and str(year).strip():
+            df_year = load_catalog(year=str(year), lang=lang, processed_dir=processed_dir)
+            if not df_year.empty and "statsField" in df_year.columns:
+                counts = df_year["statsField"].astype(str).str.strip().value_counts(sort=False)
+                stats_fields = [{"stats_field": k, "dataset_count": int(v)} for k, v in counts.items()]
+                code_to_name = _get_stats_field_code_to_name()
+                for s in stats_fields:
+                    s["stats_field_name"] = code_to_name.get(s["stats_field"], "")
+                out["year"] = str(year)
+                out["stats_fields"] = stats_fields
+                out["message"] = (out.get("message", "") + f" {year}年: 統計分野 {len(stats_fields)} 件。").strip()
+            else:
+                out["year"] = str(year)
+                out["stats_fields"] = []
         else:
-            out["year"] = str(year)
             out["stats_fields"] = []
-    else:
-        out["stats_fields"] = []
 
-    if include_stats_areas:
-        areas_result = list_stats_areas()
-        out["stats_areas"] = areas_result.get("stats_areas", [])
-        out["message"] = (out.get("message", "") + " " + (areas_result.get("message", "") or "")).strip()
-    else:
-        out["stats_areas"] = []
+        if include_stats_areas:
+            areas_result = list_stats_areas()
+            out["stats_areas"] = areas_result.get("stats_areas", [])
+            out["message"] = (out.get("message", "") + " " + (areas_result.get("message", "") or "")).strip()
+        else:
+            out["stats_areas"] = []
 
-    return out
+        return out
+
+    return _run_with_timeout(timeout_seconds, _body, timeout_error)
 
 
 def list_stats_fields_for_year(
@@ -504,37 +537,40 @@ def list_stats_fields_for_year(
     lang: str = "J",
     processed_dir: Path | str | None = None,
     include_names: bool = True,
+    timeout_seconds: float = DEFAULT_CATALOG_TIMEOUT_SECONDS,
 ) -> dict:
     """
     Return unique stats_field (大分類コード) for a given year with dataset counts.
     Fast: uses predicate pushdown when reading consolidated parquet (only that year).
+    timeout_seconds: max time for I/O; on timeout returns error dict with timeout=True.
     Use when the user asks "2024年の統計分野全て" or "which stats fields have data in year X".
     include_names: if True, merge with statsfield.csv to add 大分類 names.
     """
-    df = load_catalog(year=year, lang=lang, processed_dir=processed_dir)
-    if df.empty or "statsField" not in df.columns:
+    timeout_error = {"year": year, "lang": lang, "stats_fields": [], "message": f"操作がタイムアウトしました。（{timeout_seconds:.0f}秒）", "timeout": True}
+
+    def _body() -> dict:
+        df = load_catalog(year=year, lang=lang, processed_dir=processed_dir)
+        if df.empty or "statsField" not in df.columns:
+            return {
+                "year": year,
+                "lang": lang,
+                "stats_fields": [],
+                "message": "該当年のカタログがありません。" if df.empty else "statsField 列がありません。",
+            }
+        counts = df["statsField"].astype(str).str.strip().value_counts(sort=False)
+        stats_fields = [{"stats_field": k, "dataset_count": int(v)} for k, v in counts.items()]
+        if include_names:
+            code_to_name = _get_stats_field_code_to_name()
+            for s in stats_fields:
+                s["stats_field_name"] = code_to_name.get(s["stats_field"], "")
         return {
             "year": year,
             "lang": lang,
-            "stats_fields": [],
-            "message": "該当年のカタログがありません。" if df.empty else "statsField 列がありません。",
+            "stats_fields": stats_fields,
+            "message": f"{year}年: 統計分野 {len(stats_fields)} 件（データセット合計 {counts.sum()} 件）。",
         }
 
-    counts = df["statsField"].astype(str).str.strip().value_counts(sort=False)
-    stats_fields = [{"stats_field": k, "dataset_count": int(v)} for k, v in counts.items()]
-
-    if include_names:
-        # Use cached mapping
-        code_to_name = _get_stats_field_code_to_name()
-        for s in stats_fields:
-            s["stats_field_name"] = code_to_name.get(s["stats_field"], "")
-
-    return {
-        "year": year,
-        "lang": lang,
-        "stats_fields": stats_fields,
-        "message": f"{year}年: 統計分野 {len(stats_fields)} 件（データセット合計 {counts.sum()} 件）。",
-    }
+    return _run_with_timeout(timeout_seconds, _body, timeout_error)
 
 
 def stats_field_subcategories(
@@ -612,57 +648,63 @@ def time_series_discovery(
     min_years: int = 2,
     limit: int = 50,
     processed_dir: Path | str | None = None,
+    timeout_seconds: float = DEFAULT_CATALOG_TIMEOUT_SECONDS,
 ) -> dict:
     """
     Find statistics that exist across multiple years (e.g. same statistics_name in 2020–2024).
     Use when the user asks "which statistics are available annually?" or "same stats 2020 to 2024".
+    timeout_seconds: max time for I/O; on timeout returns error dict with timeout=True.
     year_start, year_end: optional range; if both set, only consider years in [year_start, year_end].
     min_years: include only statistics that appear in at least this many years (default 2).
     """
-    df = _load_full_catalog(
-        lang=lang,
-        processed_dir=processed_dir,
-        columns=["statistics_name", "stat_name_code", "surveyYears", "statsDataId"],
-    )
-    if df.empty or "statistics_name" not in df.columns or "surveyYears" not in df.columns:
+    timeout_error = {"year_start": year_start, "year_end": year_end, "lang": lang, "statistics": [], "message": f"操作がタイムアウトしました。（{timeout_seconds:.0f}秒）", "timeout": True}
+
+    def _body() -> dict:
+        df = _load_full_catalog(
+            lang=lang,
+            processed_dir=processed_dir,
+            columns=["statistics_name", "stat_name_code", "surveyYears", "statsDataId"],
+        )
+        if df.empty or "statistics_name" not in df.columns or "surveyYears" not in df.columns:
+            return {
+                "year_start": year_start,
+                "year_end": year_end,
+                "lang": lang,
+                "statistics": [],
+                "message": "カタログがありません。run_build_catalog を実行してください。" if df.empty else "statistics_name または surveyYears がありません。",
+            }
+        if year_start is not None and str(year_start).strip():
+            df = df[df["surveyYears"].astype(str) >= str(year_start)]
+        if year_end is not None and str(year_end).strip():
+            df = df[df["surveyYears"].astype(str) <= str(year_end)]
+        if df.empty:
+            return {"year_start": year_start, "year_end": year_end, "lang": lang, "statistics": [], "message": "該当する年のデータがありません。"}
+        key = "stat_name_code" if "stat_name_code" in df.columns and df["stat_name_code"].notna().any() else "statistics_name"
+        df = df.dropna(subset=[key])
+        if df.empty:
+            return {"year_start": year_start, "year_end": year_end, "lang": lang, "statistics": [], "message": "統計名でグループ化できるデータがありません。"}
+        grouped = df.groupby(key)
+        years_per_stat = grouped["surveyYears"].apply(lambda s: sorted(s.astype(str).unique().tolist())).to_dict()
+        name_per_key = grouped["statistics_name"].first().to_dict() if "statistics_name" in df.columns else {k: k for k in years_per_stat}
+        candidates = [(k, years_per_stat[k], name_per_key.get(k, k)) for k in years_per_stat if len(years_per_stat[k]) >= min_years]
+        candidates.sort(key=lambda x: -len(x[1]))
+        statistics = []
+        for k, years, name in candidates[:limit]:
+            statistics.append({
+                "statistics_name": name,
+                "stat_name_code": k if key == "stat_name_code" else None,
+                "years": years,
+                "year_count": len(years),
+            })
         return {
             "year_start": year_start,
             "year_end": year_end,
             "lang": lang,
-            "statistics": [],
-            "message": "カタログがありません。run_build_catalog を実行してください。" if df.empty else "statistics_name または surveyYears がありません。",
+            "statistics": statistics,
+            "message": f"複数年にわたる統計: {len(statistics)} 件（最低 {min_years} 年）。" + (f" 対象年: {year_start}–{year_end}" if year_start and year_end else ""),
         }
-    if year_start is not None and str(year_start).strip():
-        df = df[df["surveyYears"].astype(str) >= str(year_start)]
-    if year_end is not None and str(year_end).strip():
-        df = df[df["surveyYears"].astype(str) <= str(year_end)]
-    if df.empty:
-        return {"year_start": year_start, "year_end": year_end, "lang": lang, "statistics": [], "message": "該当する年のデータがありません。"}
-    # Group by statistics_name (or stat_name_code if available for stability)
-    key = "stat_name_code" if "stat_name_code" in df.columns and df["stat_name_code"].notna().any() else "statistics_name"
-    df = df.dropna(subset=[key])
-    if df.empty:
-        return {"year_start": year_start, "year_end": year_end, "lang": lang, "statistics": [], "message": "統計名でグループ化できるデータがありません。"}
-    grouped = df.groupby(key)
-    years_per_stat = grouped["surveyYears"].apply(lambda s: sorted(s.astype(str).unique().tolist())).to_dict()
-    name_per_key = grouped["statistics_name"].first().to_dict() if "statistics_name" in df.columns else {k: k for k in years_per_stat}
-    candidates = [(k, years_per_stat[k], name_per_key.get(k, k)) for k in years_per_stat if len(years_per_stat[k]) >= min_years]
-    candidates.sort(key=lambda x: -len(x[1]))
-    statistics = []
-    for k, years, name in candidates[:limit]:
-        statistics.append({
-            "statistics_name": name,
-            "stat_name_code": k if key == "stat_name_code" else None,
-            "years": years,
-            "year_count": len(years),
-        })
-    return {
-        "year_start": year_start,
-        "year_end": year_end,
-        "lang": lang,
-        "statistics": statistics,
-        "message": f"複数年にわたる統計: {len(statistics)} 件（最低 {min_years} 年）。" + (f" 対象年: {year_start}–{year_end}" if year_start and year_end else ""),
-    }
+
+    return _run_with_timeout(timeout_seconds, _body, timeout_error)
 
 
 def search_catalog(
@@ -672,29 +714,35 @@ def search_catalog(
     keyword: str | None = None,
     limit: int = 20,
     processed_dir: Path | str | None = None,
+    timeout_seconds: float = DEFAULT_CATALOG_TIMEOUT_SECONDS,
 ) -> list[dict]:
     """
     Search the catalog by year, optional statsField, and optional keyword.
     Keyword is matched (case-insensitive) against statistics_name, main_category_name,
     sub_category_name, gov_org_name, title_spec_name.
+    timeout_seconds: max time for I/O; on timeout returns [{error: "timeout", message: "..."}].
     Returns a list of dicts with statsDataId, statistics_name, main_category_name,
     sub_category_name, gov_org_name, statsField, surveyYears (limit items).
     Uses _get_catalog_df (discover path) then head(limit) → list[dict].
     """
-    df = _get_catalog_df(
-        year=year,
-        lang=lang,
-        stats_field=stats_field,
-        keyword=keyword,
-        processed_dir=processed_dir,
-    )
-    if df.empty:
-        return []
 
-    cols = ["statsDataId", "statistics_name", "main_category_name", "sub_category_name", "gov_org_name", "statsField", "surveyYears"]
-    cols = [c for c in cols if c in df.columns]
-    if not cols:
-        return []
-    df = df[cols].drop_duplicates(subset=["statsDataId"] if "statsDataId" in cols else cols[0:1])
-    df = df.head(limit)
-    return df.to_dict(orient="records")
+    def _body() -> list[dict]:
+        df = _get_catalog_df(
+            year=year,
+            lang=lang,
+            stats_field=stats_field,
+            keyword=keyword,
+            processed_dir=processed_dir,
+        )
+        if df.empty:
+            return []
+        cols = ["statsDataId", "statistics_name", "main_category_name", "sub_category_name", "gov_org_name", "statsField", "surveyYears"]
+        cols = [c for c in cols if c in df.columns]
+        if not cols:
+            return []
+        df = df[cols].drop_duplicates(subset=["statsDataId"] if "statsDataId" in cols else cols[0:1])
+        df = df.head(limit)
+        return df.to_dict(orient="records")
+
+    timeout_result = [{"error": "timeout", "message": f"操作がタイムアウトしました。（{timeout_seconds:.0f}秒）"}]
+    return _run_with_timeout(timeout_seconds, _body, timeout_result)
