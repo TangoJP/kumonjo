@@ -182,10 +182,10 @@ So discovery is an internal step the chatbot uses to *identify* which data to re
 - [ ] Ensure scripts run against current data layout (data/raw, data/processed) and optionally use a config for paths.
 
 ### Phase 2: MCP server and “discovery” + “retrieval” tools
-- [ ] Add MCP server (e.g. Python, stdio or SSE) that exposes tools.
-- [ ] Tool **discover_datasets**: Inputs e.g. question (string), year (optional), statsField (optional). Output: list of recommended statsDataIds with metadata (from catalog or API). First version can be keyword/catalog-only.
-- [ ] Tool **retrieve_and_process**: Inputs e.g. statsDataId, year, lang. Output: path to parquet/CSV or inline table (depending on size). Implementation can wrap current retrieval + processing.
-- [ ] Document how to register this MCP server with Claude Desktop.
+- [x] Add MCP server (Python, stdio via FastMCP) in **mcp_server/server.py** (folder named mcp_server to avoid shadowing the `mcp` package).
+- [x] Tool **discover_datasets**: year, lang, stats_field, keyword, limit → list of statsDataIds + metadata from catalog (keyword/catalog-only). Catalog logic in **kumonjo/discovery/catalog.py**.
+- [x] Tool **retrieve_and_process**: statsDataId, year, lang, output_format → path, rows, status. Wraps kumonjo retrieval + processing.
+- [x] Document how to register this MCP server with Claude Desktop in **docs/MCP_CLAUDE_DESKTOP.md**.
 
 ### Phase 3: Analysis tool and scope
 - [ ] Define analysis scope (e.g. summary stats, time series, filters).

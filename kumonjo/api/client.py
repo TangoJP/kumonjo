@@ -48,10 +48,14 @@ def get_stats_list(
     stats_field: str,
     survey_years: str,
     lang: str = "J",
+    start_position: int = 1,
+    limit: int = 50000,
     session: requests.Session | None = None,
 ) -> dict[str, Any]:
     """
     Call getStatsList: list tables (statsDataIds) for a statsField and year.
+    start_position: 1-based start index (for pagination).
+    limit: max items per request (e-Stat may cap this; use pagination to get all).
     Returns raw JSON response; use processing.clean_list to build a catalog DataFrame.
     Raises EstatAPIError if the API returns STATUS != 0 (do not save that response).
     """
@@ -60,6 +64,8 @@ def get_stats_list(
         "statsField": stats_field,
         "surveyYears": survey_years,
         "lang": lang,
+        "startPosition": start_position,
+        "limit": limit,
     }
     sess = session or requests.Session()
     resp = sess.get(BASE_URL_LIST, params=params)

@@ -1,4 +1,4 @@
-from kumonjo.processing.clean_list import clean_list_of_tables
+from kumonjo.processing.clean_list import clean_list_of_tables, clean_statsDataId_table
 from kumonjo.processing.parse_response import (
     extract_annotations_single,
     extract_annotations_whole,
@@ -10,6 +10,7 @@ from kumonjo.processing.parse_response import (
 
 __all__ = [
     "clean_list_of_tables",
+    "clean_statsDataId_table",
     "extract_annotations_single",
     "extract_annotations_whole",
     "extract_values_raw",
