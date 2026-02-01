@@ -195,7 +195,9 @@ def catalog_aggregate(
 ) -> dict:
     """
     Aggregate catalog by a single attribute: group by `by` and count datasets (statsDataId).
-    Fast: reads only the columns needed and uses predicate pushdown when year or filter are set.
+    When year is set, uses the same discover path as search_catalog (load_catalog via _get_catalog_df)
+    then aggregates over that DataFrame (discover then aggregate). When year is None, uses
+    _load_full_catalog with predicate pushdown.
     by: one of statsField, gov_org_code, gov_org_name, sub_category_code, sub_category_name,
         statistics_name, stat_name_code, surveyYears.
     year: if set, only rows with surveyYears == year (predicate pushdown).
@@ -212,32 +214,45 @@ def catalog_aggregate(
             "groups": [],
             "message": f"by は次のいずれかにしてください: {', '.join(sorted(_AGGREGATE_BY_ALLOWED))}",
         }
-    cols = [by, "statsDataId"]
-    if filter_column and filter_column not in cols:
-        cols.append(filter_column)
-    if year or (filter_column and filter_column == "surveyYears"):
-        if "surveyYears" not in cols:
-            cols.append("surveyYears")
     # Optional display name column (e.g. gov_org_name when by=gov_org_code)
     name_col = None
     if include_display_name:
-        if by == "gov_org_code" and "gov_org_name" not in cols:
-            cols.append("gov_org_name")
+        if by == "gov_org_code":
             name_col = "gov_org_name"
-        elif by == "sub_category_code" and "sub_category_name" not in cols:
-            cols.append("sub_category_name")
+        elif by == "sub_category_code":
             name_col = "sub_category_name"
-    filters: list[tuple[str, str, str | int]] = []
+
+    # When year is set, use discover path (load_catalog via _get_catalog_df) then aggregate.
+    # When year is None, use _load_full_catalog with predicate pushdown.
     if year is not None and str(year).strip():
-        filters.append(("surveyYears", "==", str(year)))
-    if filter_column and filter_value is not None and str(filter_value).strip():
-        filters.append((filter_column, "==", str(filter_value).strip()))
-    df = _load_full_catalog(
-        lang=lang,
-        processed_dir=processed_dir,
-        columns=cols,
-        filters=filters if filters else None,
-    )
+        df = _get_catalog_df(
+            year=str(year),
+            lang=lang,
+            filter_column=filter_column,
+            filter_value=filter_value,
+            processed_dir=processed_dir,
+        )
+        if not df.empty:
+            cols = [c for c in [by, "statsDataId"] + ([name_col] if name_col and name_col in df.columns else []) if c in df.columns]
+            df = df[cols].copy()
+    else:
+        cols = [by, "statsDataId"]
+        if filter_column and filter_column not in cols:
+            cols.append(filter_column)
+        if filter_column and filter_column == "surveyYears":
+            if "surveyYears" not in cols:
+                cols.append("surveyYears")
+        if name_col and name_col not in cols:
+            cols.append(name_col)
+        filters: list[tuple[str, str, str | int]] = []
+        if filter_column and filter_value is not None and str(filter_value).strip():
+            filters.append((filter_column, "==", str(filter_value).strip()))
+        df = _load_full_catalog(
+            lang=lang,
+            processed_dir=processed_dir,
+            columns=cols,
+            filters=filters if filters else None,
+        )
     if df.empty:
         return {
             "by": by,
@@ -365,6 +380,47 @@ def load_catalog(
     if not path.exists():
         return pd.DataFrame()
     return pd.read_csv(path, dtype="object", header=0)
+
+
+def _get_catalog_df(
+    year: str,
+    lang: str = "J",
+    stats_field: str | None = None,
+    keyword: str | None = None,
+    filter_column: str | None = None,
+    filter_value: str | None = None,
+    processed_dir: Path | str | None = None,
+) -> pd.DataFrame:
+    """
+    Shared discover path: load catalog for one year (load_catalog) then apply optional filters.
+    Used by search_catalog (discover → head(limit) → list[dict]) and catalog_aggregate (discover → aggregate).
+    """
+    df = load_catalog(year=year, lang=lang, processed_dir=processed_dir)
+    if df.empty:
+        return df
+
+    if stats_field is not None and str(stats_field).strip() != "":
+        if "statsField" in df.columns:
+            df = df[df["statsField"].astype(str).str.strip() == str(stats_field).strip()].copy()
+        else:
+            return pd.DataFrame()
+
+    if keyword is not None and keyword.strip() != "":
+        kw = keyword.strip().lower()
+        text_cols = [
+            c for c in ["statistics_name", "main_category_name", "sub_category_name", "gov_org_name", "title_spec_name"]
+            if c in df.columns
+        ]
+        if text_cols:
+            mask = pd.Series(False, index=df.index)
+            for c in text_cols:
+                mask = mask | df[c].fillna("").astype(str).str.lower().str.contains(kw, regex=False)
+            df = df[mask].copy()
+
+    if filter_column and filter_value is not None and str(filter_value).strip() and filter_column in df.columns:
+        df = df[df[filter_column].astype(str).str.strip() == str(filter_value).strip()].copy()
+
+    return df
 
 
 def catalog_overview(
@@ -623,28 +679,17 @@ def search_catalog(
     sub_category_name, gov_org_name, title_spec_name.
     Returns a list of dicts with statsDataId, statistics_name, main_category_name,
     sub_category_name, gov_org_name, statsField, surveyYears (limit items).
+    Uses _get_catalog_df (discover path) then head(limit) → list[dict].
     """
-    df = load_catalog(year=year, lang=lang, processed_dir=processed_dir)
+    df = _get_catalog_df(
+        year=year,
+        lang=lang,
+        stats_field=stats_field,
+        keyword=keyword,
+        processed_dir=processed_dir,
+    )
     if df.empty:
         return []
-
-    if stats_field is not None and stats_field != "":
-        if "statsField" in df.columns:
-            df = df[df["statsField"].astype(str).str.strip() == str(stats_field).strip()]
-        else:
-            df = pd.DataFrame()
-
-    if keyword is not None and keyword.strip() != "":
-        kw = keyword.strip().lower()
-        text_cols = [
-            c for c in ["statistics_name", "main_category_name", "sub_category_name", "gov_org_name", "title_spec_name"]
-            if c in df.columns
-        ]
-        if text_cols:
-            mask = pd.Series(False, index=df.index)
-            for c in text_cols:
-                mask = mask | df[c].fillna("").astype(str).str.lower().str.contains(kw, regex=False)
-            df = df[mask]
 
     cols = ["statsDataId", "statistics_name", "main_category_name", "sub_category_name", "gov_org_name", "statsField", "surveyYears"]
     cols = [c for c in cols if c in df.columns]

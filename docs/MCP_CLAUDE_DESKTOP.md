@@ -13,6 +13,8 @@ The Kumonjo MCP server exposes tools for discovering and retrieving Japanese gov
 
 Prefer **catalog_overview** for "what years / what stats fields / overview" in one call; use **discover_datasets** to search, and **retrieve_and_process** to fetch table data.
 
+For "how many datasets per category?" or breakdown questions, use **discover_datasets** (targeted calls) or **catalog_overview(year=Y)** for stats_field counts — these are faster than the previous catalog_aggregate tool, which is no longer exposed.
+
 ## Prerequisites
 
 1. **Catalog** – Run `python scripts/run_list_tables.py --year 2024` (and other years as needed), then `python scripts/run_build_catalog.py` to build `data/processed/{lang}/catalog_full.parquet`. Discovery uses this consolidated file when available.

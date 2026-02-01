@@ -1,0 +1,9 @@
+"""Pytest configuration. Ensures project root is on sys.path before test collection."""
+
+import sys
+from pathlib import Path
+
+# Project root = parent of tests/
+_root = Path(__file__).resolve().parent.parent
+if str(_root) not in sys.path:
+    sys.path.insert(0, str(_root))

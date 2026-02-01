@@ -1,7 +1,19 @@
 """Timing tests for catalog_aggregate() from kumonjo.discovery.catalog."""
 
+import sys
 import time
 import unittest
+from pathlib import Path
+
+# Force this repo's kumonjo package to load: clear cached library modules only (not kumonjo.tests*)
+_root = Path(__file__).resolve().parent.parent
+_root_str = str(_root)
+for key in list(sys.modules):
+    if key == "kumonjo" or (key.startswith("kumonjo.") and not key.startswith("kumonjo.tests")):
+        del sys.modules[key]
+if _root_str in sys.path:
+    sys.path.remove(_root_str)
+sys.path.insert(0, _root_str)
 
 from kumonjo.discovery.catalog import catalog_aggregate
 
@@ -73,6 +85,32 @@ class TestCatalogAggregateTiming(unittest.TestCase):
         self.assertEqual(result["by"], "sub_category_name")
         self.assertEqual(result.get("filter_column"), "statsField")
         self.assertEqual(result.get("filter_value"), "02")
+
+    def test_catalog_aggregate_mcp_input(self) -> None:
+        """MCP server catalog_aggregate input: by=statsField, year=2025, filter gov_org_code=00100."""
+        kwargs = {
+            "by": "statsField",
+            "lang": "J",
+            "year": "2025",
+            "limit": 50,
+            "filter_value": "00100",
+            "filter_column": "gov_org_code",
+            "include_display_name": True,
+        }
+        result, elapsed = self._timed_aggregate(**kwargs)
+        print(f"  catalog_aggregate(MCP input): {elapsed:.3f}s")
+        self.assertLess(elapsed, MAX_SECONDS_PER_CALL, f"MCP input took {elapsed:.3f}s")
+        self.assertEqual(result["by"], "statsField")
+        self.assertEqual(result.get("lang"), "J")
+        self.assertEqual(result.get("year"), "2025")
+        self.assertEqual(result.get("filter_column"), "gov_org_code")
+        self.assertEqual(result.get("filter_value"), "00100")
+        self.assertIn("groups", result)
+        self.assertIn("message", result)
+        for g in result["groups"]:
+            self.assertIn("value", g)
+            self.assertIn("dataset_count", g)
+            self.assertIn("name", g)
 
     def test_aggregate_invalid_by_returns_quickly(self) -> None:
         """Invalid 'by' should return quickly (no parquet read)."""
