@@ -255,12 +255,18 @@ def catalog_aggregate(
         agg_dict["_name"] = (name_col, "first")
     counts = df.groupby(by, dropna=False).agg(**agg_dict).reset_index()
     counts = counts.sort_values("dataset_count", ascending=False).head(limit)
-    groups = []
-    for _, row in counts.iterrows():
-        val = row[by]
-        value = str(val) if pd.notna(val) else ""
-        name = str(row["_name"]) if "_name" in row and pd.notna(row.get("_name")) else value
-        groups.append({"value": value, "dataset_count": int(row["dataset_count"]), "name": name})
+    # Build groups without iterrows (faster)
+    values = counts[by].map(lambda x: "" if pd.isna(x) else str(x))
+    cnts = counts["dataset_count"].astype(int)
+    names = (
+        counts["_name"].map(lambda x: "" if pd.isna(x) else str(x))
+        if "_name" in counts.columns
+        else values
+    )
+    groups = [
+        {"value": v, "dataset_count": c, "name": n or v}
+        for v, c, n in zip(values, cnts, names)
+    ]
     if by == "statsField" and include_display_name:
         # Use cached mapping
         code_to_name = _get_stats_field_code_to_name()
@@ -283,21 +289,40 @@ def catalog_aggregate(
     }
 
 
+@functools.lru_cache(maxsize=16)
+def _read_parquet_cached(
+    path_str: str,
+    mtime_ns: int,
+    columns_key: tuple[str, ...] | None,
+    filters_key: tuple[tuple[str, str, str | int], ...] | None,
+) -> pd.DataFrame:
+    """Cached parquet read; key includes mtime so rebuilt catalog invalidates cache."""
+    path = Path(path_str)
+    if not path.exists() or path.stat().st_mtime_ns != mtime_ns:
+        return pd.DataFrame()
+    try:
+        cols = list(columns_key) if columns_key else None
+        filts = list(filters_key) if filters_key else None
+        return pd.read_parquet(path, columns=cols, filters=filts)
+    except Exception:
+        return pd.DataFrame()
+
+
 def _load_full_catalog(
     lang: str = "J",
     processed_dir: Path | str | None = None,
     columns: list[str] | None = None,
     filters: list[tuple[str, str, str | int]] | None = None,
 ) -> pd.DataFrame:
-    """Read the consolidated catalog parquet into a DataFrame. Optional columns and filters."""
+    """Read the consolidated catalog parquet into a DataFrame. Optional columns and filters. Cached by path+mtime+columns+filters."""
     base = Path(processed_dir) if processed_dir else get_data_dirs()["processed"]
     consolidated = _get_consolidated_path(lang, base)
     if consolidated is None or not consolidated.exists():
         return pd.DataFrame()
-    try:
-        return pd.read_parquet(consolidated, columns=columns, filters=filters)
-    except Exception:
-        return pd.DataFrame()
+    mtime_ns = consolidated.stat().st_mtime_ns
+    columns_key = tuple(sorted(columns)) if columns else None
+    filters_key = tuple(tuple(f) for f in filters) if filters else None
+    return _read_parquet_cached(str(consolidated), mtime_ns, columns_key, filters_key)
 
 
 def load_catalog(
