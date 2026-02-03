@@ -61,9 +61,41 @@ def _log_tool_call(tool_name: str, thunk):
 
 mcp = FastMCP(
     "Kumonjo",
-    instructions="Tools for discovering, retrieving, and analyzing Japanese government statistics (e-Stat). (1) Search for datasets: use discover_datasets(year, stats_field, keyword). (2) Fetch table contents (columns and rows): use retrieve_and_process(stats_data_id, year, lang)—do NOT use get_dataset_metadata for that (metadata only). (3) After retrieve_and_process, use analyze(columns, rows, analysis_type, ...) for summary, filter, aggregate, time_series, or top_bottom. catalog_overview for years and stats_fields; list_* are alternatives. Do not use catalog_aggregate (not exposed).",
+    instructions=(
+        "Tools for discovering, retrieving, and analyzing Japanese government statistics (e-Stat). "
+        "All of these tools ARE available: discover_datasets, retrieve_and_process, get_dataset_metadata, analyze, catalog_overview, list_*. "
+        "(1) Search: discover_datasets(year, stats_field, keyword). "
+        "(2) Fetch table data (columns and rows): retrieve_and_process(stats_data_id, year, lang)—do NOT use get_dataset_metadata for table contents (metadata only). "
+        "(3) After retrieve_and_process, use analyze(columns, rows, analysis_type, ...) for summary, filter, aggregate, time_series, or top_bottom. "
+        "catalog_overview for years and stats_fields. Do not use catalog_aggregate (not exposed)."
+    ),
     json_response=True,
 )
+
+# Canonical list so list_available_tools and docs stay in sync
+_TOOLS_META = [
+    ("catalog_overview", "Years, dataset counts, stats fields for a year."),
+    ("list_stats_areas", "List 大分類・小分類 from statsfield.csv."),
+    ("list_stats_fields_for_year", "Stats fields and counts for one year."),
+    ("time_series_discovery", "Find statistics available across multiple years."),
+    ("list_available_years", "Years that have a local catalog."),
+    ("discover_datasets", "Search catalog by year/stats_field/keyword → list of statsDataIds."),
+    ("get_dataset_metadata", "Dataset metadata (survey frequency, last updated); not table rows."),
+    ("retrieve_and_process", "Fetch table by statsDataId; returns columns and rows for analyze."),
+    ("analyze", "Run summary/filter/aggregate/time_series/top_bottom on columns+rows from retrieve_and_process."),
+]
+
+
+@mcp.tool()
+def list_available_tools() -> dict:
+    """
+    Return the list of all tools provided by this server. Use this if unsure which tools exist.
+    discover_datasets and retrieve_and_process are available; use them to search and fetch table data, then analyze.
+    """
+    return {
+        "tools": [{"name": n, "description": d} for n, d in _TOOLS_META],
+        "message": "discover_datasets でデータセットを検索し、retrieve_and_process で表データを取得、analyze で分析できます。",
+    }
 
 
 @mcp.tool()

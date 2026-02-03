@@ -77,6 +77,7 @@ The server exposes the following tools. If **discover_datasets** or **retrieve_a
 
 | Tool | Purpose |
 |------|---------|
+| list_available_tools | List all tool names (use if discover_datasets/retrieve_and_process appear unavailable) |
 | catalog_overview | Years available, dataset counts, stats fields (大分類) for a year |
 | list_available_years | Years that have a local catalog |
 | list_stats_fields_for_year | stats_field (大分類) and counts for a given year |
@@ -91,7 +92,7 @@ The server exposes the following tools. If **discover_datasets** or **retrieve_a
 
 - **Fully quit and restart Claude Desktop** (quit the app, not just close the window).
 - In config, ensure **mcpServers.kumonjo** `args` points to the **absolute path** of this repo’s `mcp_server/server.py`.
-- If **discover_datasets** or **retrieve_and_process** are reported as “not found”, the client may be using a cached or partial tool list. Quit Claude Desktop completely, then reopen and start a new chat so it re-fetches the tool list from the server. You can confirm the server exposes all tools with MCP Inspector: `uv run mcp dev mcp_server/server.py`.
+- If **discover_datasets** or **retrieve_and_process** are reported as "not found" or "利用不可" (unavailable), the client may be using a cached or partial tool list. Quit Claude Desktop completely, then reopen and start a new chat so it re-fetches the tool list from the server. You can confirm the server exposes all tools with MCP Inspector: `uv run mcp dev mcp_server/server.py`. Ask Claude to call **list_available_tools** to see all tool names (including discover_datasets and retrieve_and_process). If **retrieve_and_process** fails at runtime (e.g. ESTAT_APP_ID not set), set `ESTAT_APP_ID` in `.env` or in the MCP server’s `env` in Claude Desktop config.
 - If needed, **clear Claude Desktop cache** (procedure depends on the app).
 
 ### Getting data contents (retrieve_and_process vs get_dataset_metadata)
