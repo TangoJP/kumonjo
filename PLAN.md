@@ -243,8 +243,8 @@ Analysis (Phase 4) will plug in as an optional step after 5; until then, the orc
 
 **Orchestrator (up to dataset retrieval)** — implement first so discovery + retrieval can be tested outside Claude Desktop:
 
-- [ ] **5-1** **Orchestrator module**: New module (e.g. `kumonjo/orchestrator.py`) that implements §4.4: accept question + optional year/lang/limit → map to discovery params → call discover → choose statsDataId(s) → call retrieve for each → return structured result (no analysis). Reuse existing discovery and retrieval APIs (same as MCP).
-- [ ] **5-2** **CLI/script**: Entrypoint (e.g. `scripts/run_orchestrator.py`) to run the orchestrator from the command line (e.g. `python -m scripts.run_orchestrator "2024年の雇用統計は？"`) for manual testing.
+- [x] **5-1** **Orchestrator module**: New module (e.g. `kumonjo/orchestrator.py`) that implements §4.4: accept question + optional year/lang/limit → map to discovery params → call discover → choose statsDataId(s) → call retrieve for each → return structured result (no analysis). Reuse existing discovery and retrieval APIs (same as MCP).
+- [x] **5-2** **CLI/script**: Entrypoint (e.g. `scripts/run_orchestrator.py`) to run the orchestrator from the command line (e.g. `python -m scripts.run_orchestrator "2024年の雇用統計は？"`) for manual testing.
 
 **Claude Desktop and UX** (after orchestrator flow works):
 

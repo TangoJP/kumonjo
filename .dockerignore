@@ -1,0 +1,17 @@
+.git
+.gitignore
+.DS_Store
+__pycache__
+*.pyc
+.pytest_cache
+.ipynb_checkpoints
+.env
+*.md
+docs/
+tests/
+scripts/
+tansaku/
+mcp/
+.claude/
+data/raw/
+data/processed/
