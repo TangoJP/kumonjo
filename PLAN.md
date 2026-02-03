@@ -199,9 +199,43 @@ Analysis (Phase 4) will plug in as an optional step after 5; until then, the orc
 
 *In execution order.*
 
-- [ ] **4-1** Define analysis scope (e.g. summary stats, time series, filters).
+- [x] **4-1** Define analysis scope (e.g. summary stats, time series, filters). *(Spec below.)*
 - [ ] **4-2** Implement **analyze** MCP tool that takes a table (or path) + analysis type and returns result.
-- [ ] **4-3** (TBD) Optionally add **extract_table_info** to retrieval/processing and expose as a small “metadata” tool.
+- [ ] **4-3** (TBD) Optionally add **extract_table_info** to retrieval/processing and expose as a small "metadata" tool.
+- [ ] **4-4** Basic visualizations: define scope and implement a **visualize** (or similar) MCP tool. *(Spec below.)*
+
+
+#### Analysis scope — Basic analysis (spec for 4-1 / 4-2)
+
+**Input**: Single table only. Primary input is **table in memory** (option A): the orchestrator passes the table data (e.g. `columns` + `rows` from `retrieve_and_process`) into the analyze tool. **Optional cache**: For large tables, we may support a short-lived `table_ref` (e.g. in-memory or temp file key) so the analyze tool can load by ref instead of receiving full rows in the request; implement inline-first, add cache/ref in a follow-up if needed.
+
+**Basic analysis types** (v1):
+
+| Type | Description | Main inputs |
+|------|-------------|-------------|
+| `summary` | Count, mean, median, min, max, std (optional sum) on the value column | table, optional value column name (default `value`) |
+| `filter` | Subset rows by dimension (e.g. area = 東京都, year = 2023) | table, filter spec (column + value or list) |
+| `aggregate` | Group by one or more dimension columns; sum/mean/count of value | table, group_by columns, agg (sum/mean/count) |
+| `time_series` | Aggregate value by time dimension (e.g. by year/period) | table, optional time column (infer from names like time_name/year or caller override) |
+| `top_bottom` | Top N or bottom N by value; optionally per group | table, N, order (top/bottom), optional group_by |
+
+**Value column**: Default name `value`; optional parameter to specify numeric column. Coerce to numeric; treat "-", empty, non-numeric as NaN (document skip/fill behavior).
+
+**Time detection**: Support both: (a) infer time column from names (e.g. time_name, year, survey_year), (b) caller can override with explicit time column name.
+
+**Output**: Fixed schema per analysis type for now (e.g. `type`, `result`/`data`), with room for future expansion (optional `meta`, `warnings`, or versioned `schema_version`). No extra keys required from callers.
+
+**Advanced analysis** (separate step): Regression, correlation, forecasting, multi-table, pivot, etc. are out of scope for 4-2; treat as a later "advanced" analysis phase or tool.
+
+#### Visualization scope — Basic visualizations (spec for 4-4)
+
+**Input**: Same as analysis: single table in memory (e.g. `columns` + `rows` from `retrieve_and_process` or from analyze output). Optional `table_ref` if cache is added later.
+
+**Basic chart types** (v1): Bar (vertical/horizontal), line (e.g. time series), and optionally simple pie or histogram. Chart type + required mapping (e.g. x = dimension, y = value; or category + value for bar/pie).
+
+**Output**: Image so the chatbot can show it. Claude Desktop (MCP) accepts tool result content type `image` with base64 data and `mimeType`. Prefer **PNG** (most compatible); **SVG** optional (base64, `image/svg+xml`) for sharp scaling. Return image as MCP image content block; fixed schema (e.g. `type`, image data or `path`, optional `meta`).
+
+**Out of scope for 4-4**: Interactive dashboards, multi-chart layouts, custom styling beyond basics; treat as "advanced" visualization later.
 
 ### Phase 5: Orchestrator and UX
 
@@ -239,7 +273,7 @@ Analysis (Phase 4) will plug in as an optional step after 5; until then, the orc
 1. Phase 1 and Phase 2 (discovery core) are done. Refine tool descriptions and Claude Desktop instructions as needed.
 2. **Phase 3**: Implement **3-1a (Option B)** so retrieval defaults to in-memory and returns data in the response; then **3-3** (detailed dataset metadata).
 3. **Phase 5 (orchestrator up to retrieval)**: Implement **5-1** (orchestrator module) and **5-2** (CLI) per §4.4 so discover → retrieve can be tested outside Claude Desktop.
-4. **Phase 4 (analysis)**: **4-1** define scope, **4-2** implement analyze tool; then add analyze step to orchestrator.
+4. **Phase 4 (analysis & viz)**: **4-1** define scope, **4-2** implement analyze tool; **4-4** define scope and implement basic visualizations; then add analyze and visualize steps to orchestrator.
 5. **Phase 5 (Claude Desktop)**: **5-3**, **5-4** — configure Claude Desktop and iterate on prompts.
 6. (TBD) Phase 2 remaining: **2-10**, **2-11** (similar-dataset search, search history & favorites).
 7. (TBD) Phase 3 remaining: **3-2**, **3-4**, **3-5** (dataset preview, bulk retrieval, dataset comparison).
