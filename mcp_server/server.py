@@ -19,6 +19,19 @@ if str(_root) not in sys.path:
 
 from mcp.server.fastmcp import FastMCP
 
+from kumonjo import get_api_key, get_data_dirs, fetch_table
+from kumonjo.analysis import run_analysis
+from kumonjo.discovery.catalog import (
+    catalog_overview as _catalog_overview,
+    get_dataset_metadata as _get_metadata_catalog,
+    list_available_years as _list_available_years,
+    list_stats_areas as _list_stats_areas,
+    list_stats_fields_for_year as _list_stats_fields_for_year,
+    search_catalog,
+    time_series_discovery as _time_series_discovery,
+)
+from kumonjo.retrieval.get_table import fetch_dataset_metadata as _fetch_meta_api
+
 # Log to stderr so stdio remains clean for JSON-RPC
 _logger = logging.getLogger("kumonjo.mcp")
 _logger.setLevel(logging.INFO)
@@ -66,8 +79,6 @@ def catalog_overview(
     include_stats_areas: if True, add stats_areas (大分類・小分類 from statsfield.csv).
     Returns years, summary (dataset_count per year), optional year, stats_fields, stats_areas, and message.
     """
-    from kumonjo.discovery.catalog import catalog_overview as _catalog_overview
-
     return _log_tool_call("catalog_overview", lambda: _catalog_overview(lang=lang, year=year, include_stats_areas=include_stats_areas))
 
 
@@ -78,8 +89,6 @@ def list_stats_areas() -> dict:
     Call when the user asks 'どの統計分野がある？' or 'list all stats areas'.
     Returns stats_areas (code, name, sub_categories) and message. Does not read the catalog.
     """
-    from kumonjo.discovery.catalog import list_stats_areas as _list_stats_areas
-
     return _log_tool_call("list_stats_areas", _list_stats_areas)
 
 
@@ -97,8 +106,6 @@ def list_stats_fields_for_year(
     include_names: if True, add 大分類 names from statsfield.csv (default True).
     Returns year, lang, stats_fields (list of {stats_field, dataset_count, stats_field_name}), and message.
     """
-    from kumonjo.discovery.catalog import list_stats_fields_for_year as _list_stats_fields_for_year
-
     return _log_tool_call("list_stats_fields_for_year", lambda: _list_stats_fields_for_year(year=year, lang=lang, include_names=include_names))
 
 
@@ -117,8 +124,6 @@ def time_series_discovery(
     limit: max number of statistics to return (default 50).
     Returns year_start, year_end, lang, statistics (statistics_name, stat_name_code, years, year_count), message.
     """
-    from kumonjo.discovery.catalog import time_series_discovery as _time_series_discovery
-
     return _log_tool_call("time_series_discovery", lambda: _time_series_discovery(year_start=year_start, year_end=year_end, lang=lang, min_years=min_years, limit=limit))
 
 
@@ -131,8 +136,6 @@ def list_available_years(lang: str = "J") -> dict:
     lang: language code (J = Japanese).
     Returns years (sorted), summary with dataset_count per year, and a short message in Japanese.
     """
-    from kumonjo.discovery.catalog import list_available_years as _list_available_years
-
     return _log_tool_call("list_available_years", lambda: _list_available_years(lang=lang))
 
 
@@ -155,8 +158,6 @@ def discover_datasets(
     limit: max number of datasets to return (default 20).
     Returns a list of datasets with statsDataId, statistics_name, main_category_name, sub_category_name, gov_org_name.
     """
-    from kumonjo.discovery.catalog import search_catalog
-
     return _log_tool_call("discover_datasets", lambda: search_catalog(year=year, lang=lang, stats_field=stats_field, keyword=keyword, limit=limit))
 
 
@@ -176,8 +177,6 @@ def get_dataset_metadata(
     use_api_fallback: if True and not in catalog, call e-Stat API for metadata (requires ESTAT_APP_ID).
     Returns survey_frequency, last_updated, data_period, statistics_name, title, gov_org_name (when available).
     """
-    from kumonjo.discovery.catalog import get_dataset_metadata as _get_metadata_catalog
-
     def _do() -> dict:
         out = _get_metadata_catalog(stats_data_id=stats_data_id.strip(), year=year, lang=lang)
         if out.get("timeout"):
@@ -188,8 +187,6 @@ def get_dataset_metadata(
         if not use_api_fallback or "該当するデータセットがカタログにありません" not in (out.get("message") or ""):
             return out
         try:
-            from kumonjo import get_api_key
-            from kumonjo.retrieval.get_table import fetch_dataset_metadata as _fetch_meta_api
             app_id = get_api_key()
             api_meta = _fetch_meta_api(app_id=app_id, stats_data_id=stats_data_id.strip(), year=year, lang=lang)
             if api_meta.get("error"):
@@ -227,8 +224,6 @@ def retrieve_and_process(
     max_rows_in_response: when save_to_disk is False, include at most this many rows in the response (default 2000); row_count is always the full count.
     Returns ok, row_count, and either (path when save_to_disk) or (columns, rows when not). Requires ESTAT_APP_ID in .env.
     """
-    from kumonjo import get_api_key, get_data_dirs, fetch_table
-
     def _do() -> dict:
         try:
             app_id = get_api_key()
@@ -298,8 +293,6 @@ def analyze(
     top_bottom: top n or bottom n by value; set n and order ("top" or "bottom"); optional group_by for per-group top/bottom.
     Returns type, result (fixed schema per analysis type), and optional meta, warnings.
     """
-    from kumonjo.analysis import run_analysis
-
     def _do() -> dict:
         return run_analysis(
             columns=columns,

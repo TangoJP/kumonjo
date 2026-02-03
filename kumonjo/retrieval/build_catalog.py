@@ -15,6 +15,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from kumonjo.config import get_data_dirs
 from kumonjo.processing.clean_list import clean_list_of_tables
 
 logger = logging.getLogger(__name__)
@@ -54,8 +55,6 @@ def build_consolidated_catalog(
     for efficient lookups when present.
     Returns the consolidated DataFrame; empty if no raw JSONs found.
     """
-    from kumonjo.config import get_data_dirs
-
     dirs = get_data_dirs()
     raw_base = Path(raw_dir) if raw_dir else dirs["raw"]
     processed_base = Path(processed_dir) if processed_dir else dirs["processed"]

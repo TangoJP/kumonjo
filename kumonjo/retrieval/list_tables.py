@@ -8,7 +8,9 @@ from pathlib import Path
 import pandas as pd
 
 from kumonjo.api.client import EstatAPIError, get_stats_list
+from kumonjo.config import get_data_dirs
 from kumonjo.processing.clean_list import clean_list_of_tables
+from kumonjo.retrieval.build_catalog import build_consolidated_catalog
 
 logger = logging.getLogger(__name__)
 
@@ -45,8 +47,6 @@ def fetch_list_of_tables(
     Returns the combined catalog DataFrame. Saves raw JSON per statsField and
     one CSV under processed/{lang}/listOfStatsFields/{year}_list_of_statsDataIds.csv.
     """
-    from kumonjo.config import get_data_dirs
-
     dirs = get_data_dirs()
     raw = Path(output_dir_raw) if output_dir_raw else dirs["raw"]
     processed = Path(output_dir_processed) if output_dir_processed else dirs["processed"]
@@ -168,7 +168,6 @@ def fetch_list_of_tables(
 
     # Update consolidated catalog for efficient MCP lookups
     try:
-        from kumonjo.retrieval.build_catalog import build_consolidated_catalog
         build_consolidated_catalog(lang=lang, output_format="parquet")
     except Exception as e:
         logger.debug("Could not update consolidated catalog: %s", e)

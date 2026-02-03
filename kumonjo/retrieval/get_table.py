@@ -8,6 +8,7 @@ import pandas as pd
 import requests
 
 from kumonjo.api.client import EstatAPIError, get_stats_data
+from kumonjo.config import get_data_dirs
 from kumonjo.processing.parse_response import (
     extract_data_from_response,
     extract_table_metadata,
@@ -32,8 +33,6 @@ def fetch_table(
     When save_to_disk is False (default), only fetch and process in memory; no files written.
     Returns the merged DataFrame; empty if fetch or parse failed.
     """
-    from kumonjo.config import get_data_dirs
-
     dirs = get_data_dirs()
     raw = Path(output_dir_raw) if output_dir_raw else dirs["raw"]
     processed = Path(output_dir_processed) if output_dir_processed else dirs["processed"]
