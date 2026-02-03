@@ -48,7 +48,7 @@ def _log_tool_call(tool_name: str, thunk):
 
 mcp = FastMCP(
     "Kumonjo",
-    instructions="Tools for discovering and retrieving Japanese government statistics (e-Stat). Discovery uses catalog_full.parquet when present. Prefer catalog_overview for lookup: years available, dataset count per year, and stats_fields (with dataset_count) for a given year in one call. For any search or breakdown (e.g. '財務省のデータ', '2024年 人口・世帯', 'how many datasets per category?'), use discover_datasets(year, stats_field, keyword) — it is fast; for breakdown-by-stats_field use catalog_overview(year=Y) which returns stats_fields with counts. Do not use catalog_aggregate (not exposed). Use retrieve_and_process to fetch table data for a statsDataId. Other tools (list_available_years, list_stats_fields_for_year, list_stats_areas) are optional alternatives to catalog_overview.",
+    instructions="Tools for discovering, retrieving, and analyzing Japanese government statistics (e-Stat). (1) Search for datasets: use discover_datasets(year, stats_field, keyword). (2) Fetch table contents (columns and rows): use retrieve_and_process(stats_data_id, year, lang)—do NOT use get_dataset_metadata for that (metadata only). (3) After retrieve_and_process, use analyze(columns, rows, analysis_type, ...) for summary, filter, aggregate, time_series, or top_bottom. catalog_overview for years and stats_fields; list_* are alternatives. Do not use catalog_aggregate (not exposed).",
     json_response=True,
 )
 
@@ -271,6 +271,52 @@ def retrieve_and_process(
         }
 
     return _log_tool_call("retrieve_and_process", _do)
+
+
+@mcp.tool()
+def analyze(
+    columns: list[str],
+    rows: list[dict],
+    analysis_type: str,
+    value_column: str = "value",
+    filter_column: str | None = None,
+    filter_value: str | int | float | None = None,
+    filter_values: list | None = None,
+    group_by: list[str] | None = None,
+    agg: str = "sum",
+    time_column: str | None = None,
+    n: int = 10,
+    order: str = "top",
+) -> dict:
+    """
+    Run basic analysis on a table (use columns and rows from retrieve_and_process).
+    analysis_type: one of summary, filter, aggregate, time_series, top_bottom.
+    summary: stats (count, mean, median, min, max, std, sum) on value column; use value_column to override default "value".
+    filter: subset rows; set filter_column and either filter_value (single) or filter_values (list).
+    aggregate: group by group_by columns and agg (sum, mean, count) the value column.
+    time_series: aggregate value by time; time_column optional (inferred from names like time_name, year if not set).
+    top_bottom: top n or bottom n by value; set n and order ("top" or "bottom"); optional group_by for per-group top/bottom.
+    Returns type, result (fixed schema per analysis type), and optional meta, warnings.
+    """
+    from kumonjo.analysis import run_analysis
+
+    def _do() -> dict:
+        return run_analysis(
+            columns=columns,
+            rows=rows,
+            analysis_type=analysis_type.strip().lower(),
+            value_column=value_column or "value",
+            filter_column=filter_column,
+            filter_value=filter_value,
+            filter_values=filter_values,
+            group_by=group_by or [],
+            agg=agg or "sum",
+            time_column=time_column,
+            n=max(1, min(n, 1000)) if n is not None else 10,
+            order=(order or "top").strip().lower(),
+        )
+
+    return _log_tool_call("analyze", _do)
 
 
 def _json_val(v) -> str | int | float | None:

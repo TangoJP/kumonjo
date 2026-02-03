@@ -200,7 +200,7 @@ Analysis (Phase 4) will plug in as an optional step after 5; until then, the orc
 *In execution order.*
 
 - [x] **4-1** Define analysis scope (e.g. summary stats, time series, filters). *(Spec below.)*
-- [ ] **4-2** Implement **analyze** MCP tool that takes a table (or path) + analysis type and returns result.
+- [x] **4-2** Implement **analyze** MCP tool that takes a table (or path) + analysis type and returns result.
 - [ ] **4-3** (TBD) Optionally add **extract_table_info** to retrieval/processing and expose as a small "metadata" tool.
 - [ ] **4-4** Basic visualizations: define scope and implement a **visualize** (or similar) MCP tool. *(Spec below.)*
 

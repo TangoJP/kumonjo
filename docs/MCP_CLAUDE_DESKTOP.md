@@ -10,6 +10,7 @@ The Kumonjo MCP server exposes tools for discovering and retrieving Japanese gov
 - **list_stats_areas** – Master list of 大分類・小分類 from statsfield.csv (subset of catalog_overview when include_stats_areas=True).
 - **discover_datasets** – Search datasets by year, stats_field, keyword; returns list of statsDataIds + metadata.
 - **retrieve_and_process** – Fetch and process one table by statsDataId. By default returns data in the response (no disk write); optionally save raw JSON and parquet/csv with `save_to_disk=true`.
+- **analyze** – Run basic analysis (summary, filter, aggregate, time_series, top_bottom) on a table; pass `columns` and `rows` from retrieve_and_process.
 
 Prefer **catalog_overview** for "what years / what stats fields / overview" in one call; use **discover_datasets** to search, and **retrieve_and_process** to fetch table data.
 
@@ -69,6 +70,33 @@ Or, if you prefer to load `.env` from the project directory, you can omit `ESTAT
 ```
 
 3. Restart Claude Desktop. The tools **discover_datasets** and **retrieve_and_process** should appear.
+
+### Available tools (what Claude should see)
+
+The server exposes the following tools. If **discover_datasets** or **retrieve_and_process** do not appear in Claude’s available functions, try the troubleshooting steps below.
+
+| Tool | Purpose |
+|------|---------|
+| catalog_overview | Years available, dataset counts, stats fields (大分類) for a year |
+| list_available_years | Years that have a local catalog |
+| list_stats_fields_for_year | stats_field (大分類) and counts for a given year |
+| list_stats_areas | Master list of 大分類・小分類 |
+| time_series_discovery | Find statistics available across multiple years |
+| **discover_datasets** | Search datasets by year, stats_field, keyword → list of statsDataIds |
+| get_dataset_metadata | Metadata for a statsDataId (survey frequency, last updated, etc.) |
+| **retrieve_and_process** | Fetch table data for a statsDataId (returns columns + rows) |
+| analyze | Run basic analysis (summary, filter, aggregate, time_series, top_bottom) on a table |
+
+### Troubleshooting: tools not showing
+
+- **Fully quit and restart Claude Desktop** (quit the app, not just close the window).
+- In config, ensure **mcpServers.kumonjo** `args` points to the **absolute path** of this repo’s `mcp_server/server.py`.
+- If **discover_datasets** or **retrieve_and_process** are reported as “not found”, the client may be using a cached or partial tool list. Quit Claude Desktop completely, then reopen and start a new chat so it re-fetches the tool list from the server. You can confirm the server exposes all tools with MCP Inspector: `uv run mcp dev mcp_server/server.py`.
+- If needed, **clear Claude Desktop cache** (procedure depends on the app).
+
+### Getting data contents (retrieve_and_process vs get_dataset_metadata)
+
+For prompts like “get one dataset and tell me its contents” (e.g. 取得して内容を教えて), the model must call **retrieve_and_process** to fetch the actual table (columns and rows). **get_dataset_metadata** returns only metadata (survey frequency, last updated, etc.), not the table data. The server instructions and tool docstrings state this; if the model still calls get_dataset_metadata, try a new chat after restarting Claude Desktop so it picks up the updated instructions.
 
 ## Using the MCP CLI (optional)
 
@@ -139,3 +167,24 @@ Returns a list of dicts with `statsDataId`, `statistics_name`, `main_category_na
 **When save_to_disk is true:** Returns `ok`, `path` (to the processed file), `rows`, and `error` (if any).
 
 Requires `ESTAT_APP_ID` in the environment or `.env`.
+
+### analyze
+
+Run basic analysis on a table. Pass `columns` and `rows` from **retrieve_and_process** (e.g. `columns` and `rows_sample`).
+
+| Parameter       | Type   | Default | Description |
+|-----------------|--------|---------|-------------|
+| columns         | list   | (required) | Column names (from retrieve_and_process). |
+| rows            | list   | (required) | List of row dicts (e.g. rows_sample from retrieve_and_process). |
+| analysis_type   | string | (required) | One of: summary, filter, aggregate, time_series, top_bottom. |
+| value_column    | string | "value" | Name of numeric column (default `value`). |
+| filter_column   | string | null   | For filter: column to filter on. |
+| filter_value    | any    | null   | For filter: single value (use with filter_column). |
+| filter_values   | list   | null   | For filter: list of values (use with filter_column). |
+| group_by        | list   | []     | For aggregate / top_bottom: column(s) to group by. |
+| agg             | string | "sum"  | For aggregate: sum, mean, or count. |
+| time_column     | string | null   | For time_series: time dimension column (inferred from names like time_name, year if not set). |
+| n               | int    | 10     | For top_bottom: number of rows. |
+| order           | string | "top"  | For top_bottom: "top" or "bottom". |
+
+Returns `type`, `result` (fixed schema per analysis type), and optional `meta`, `warnings`. Use after **retrieve_and_process** to get summary stats, filter rows, aggregate by dimension, time series, or top/bottom N.
