@@ -144,6 +144,19 @@ kumonjo/
 
 So discovery is an internal step the chatbot uses to *identify* which data to retrieve; the user does not run discovery separately.
 
+### 4.4 Orchestrator actions (up to dataset retrieval)
+
+Simpler, concrete steps for the flow **before** any analysis tool exists. Implement this first so dataset retrieval can be tested outside Claude Desktop (CLI, script, or tests).
+
+1. **Accept input**: User question (natural language) + optional year, lang, limit.
+2. **Map to discovery params**: From the question, derive keyword and/or stats_field (e.g. pass-through or simple extraction); default year/lang from config if missing.
+3. **Discover**: Call discovery (same as MCP `discover_datasets`) → get list of statsDataIds + metadata.
+4. **Choose targets**: Take top N or first statsDataId(s) (e.g. limit=1 or 3); optional future: let user pick from list.
+5. **Retrieve**: For each chosen statsDataId, call retrieval (same as MCP `retrieve_and_process`) → get table data (columns, rows/sample, row_count) or path if save_to_disk.
+6. **Return**: Structured result (discovered list + retrieved table(s)) so callers can print, assert, or pass to a future analyze step.
+
+Analysis (Phase 4) will plug in as an optional step after 5; until then, the orchestrator stops after dataset retrieval.
+
 ---
 
 ## 5. Phased Plan
@@ -154,6 +167,9 @@ So discovery is an internal step the chatbot uses to *identify* which data to re
 - [x] **1-3** Scripts use **config** for paths and ESTAT_APP_ID (.env); data layout data/raw, data/processed.
 
 ### Phase 2: Discovery (search, list, catalog — which datasets exist)
+
+*In execution order; TBD items at end.*
+
 - [x] **2-1** MCP server (Python, stdio via FastMCP) in **mcp_server/server.py**.
 - [x] **2-2** **catalog_overview**: years, dataset counts, optional stats_fields for a year, optional stats_areas (single lookup).
 - [x] **2-3** **list_available_years**, **list_stats_areas**, **list_stats_fields_for_year**: optional alternatives to catalog_overview.
@@ -170,21 +186,36 @@ So discovery is an internal step the chatbot uses to *identify* which data to re
 
 **Data storage policy**: Only the **catalog** (list of datasets, e.g. catalog_full.parquet) is persisted to disk by default. Retrieved **dataset contents** (raw JSON, processed parquet/csv per statsDataId) are **not** stored on disk unless explicitly requested (Option B below).
 
+*In execution order; TBD items at end.*
+
 - [x] **3-1** **retrieve_and_process**: statsDataId, year, lang, output_format → path, rows, status. *(Current: always writes to disk; to be updated per 3-1a.)*
-- [ ] **3-1a** **Option B — Optional disk write for retrieved datasets**: Add a parameter (e.g. `save_to_disk: bool = False`). When `False` (default): fetch and process in memory only; **return data in the tool response** (e.g. `columns`, `rows` or `sample_rows`, `row_count`) so Claude can answer questions without reading a file; do **not** write to `data/raw/.../statsDataId/` or `data/processed/.../statsDataId/`; omit or set `path` to null. When `True`: keep current behavior (write raw + processed, return local filesystem `path`). Align `fetch_table()` and CLI scripts with this policy (e.g. optional write).
-- [ ] **3-2** (TBD) **Dataset preview**: Before retrieve: column names, row count, sample rows.
+- [x] **3-1a** **Option B — Optional disk write for retrieved datasets**: Add a parameter (e.g. `save_to_disk: bool = False`). When `False` (default): fetch and process in memory only; **return data in the tool response** (e.g. `columns`, `rows` or `sample_rows`, `row_count`) so Claude can answer questions without reading a file; do **not** write to `data/raw/.../statsDataId/` or `data/processed/.../statsDataId/`; omit or set `path` to null. When `True`: keep current behavior (write raw + processed, return local filesystem `path`). Align `fetch_table()` and CLI scripts with this policy (e.g. optional write).
 - [ ] **3-3** **Detailed dataset metadata**: Survey frequency (月次/年次), last updated, data period from e-Stat API.
+- [ ] **3-2** (TBD) **Dataset preview**: Before retrieve: column names, row count, sample rows.
 - [ ] **3-4** (TBD) **Bulk retrieval**: Multiple statsDataIds in one call for batch/time-series download.
 - [ ] **3-5** (TBD) **Dataset comparison**: Compare multiple datasets (name, size, column count) side-by-side.
 
 ### Phase 4: Analysis tool and scope
+
+*In execution order.*
+
 - [ ] **4-1** Define analysis scope (e.g. summary stats, time series, filters).
 - [ ] **4-2** Implement **analyze** MCP tool that takes a table (or path) + analysis type and returns result.
-- [ ] **4-3** Optionally add **extract_table_info** to retrieval/processing and expose as a small “metadata” tool.
+- [ ] **4-3** (TBD) Optionally add **extract_table_info** to retrieval/processing and expose as a small “metadata” tool.
 
 ### Phase 5: Orchestrator and UX
-- [ ] **5-1** Configure Claude Desktop to use the MCP server; optional custom instructions for “use discover → retrieve → analyze” flow.
-- [ ] **5-2** Iterate on prompts and tool descriptions (in Japanese/English) so the model chooses the right tools and interprets government data correctly.
+
+*In execution order.*
+
+**Orchestrator (up to dataset retrieval)** — implement first so discovery + retrieval can be tested outside Claude Desktop:
+
+- [ ] **5-1** **Orchestrator module**: New module (e.g. `kumonjo/orchestrator.py`) that implements §4.4: accept question + optional year/lang/limit → map to discovery params → call discover → choose statsDataId(s) → call retrieve for each → return structured result (no analysis). Reuse existing discovery and retrieval APIs (same as MCP).
+- [ ] **5-2** **CLI/script**: Entrypoint (e.g. `scripts/run_orchestrator.py`) to run the orchestrator from the command line (e.g. `python -m scripts.run_orchestrator "2024年の雇用統計は？"`) for manual testing.
+
+**Claude Desktop and UX** (after orchestrator flow works):
+
+- [ ] **5-3** Configure Claude Desktop to use the MCP server; optional custom instructions for “use discover → retrieve → analyze” flow.
+- [ ] **5-4** Iterate on prompts and tool descriptions (in Japanese/English) so the model chooses the right tools and interprets government data correctly.
 
 ---
 
@@ -203,10 +234,15 @@ So discovery is an internal step the chatbot uses to *identify* which data to re
 
 ## 7. Next Steps
 
+*In execution order; TBD items at end.*
+
 1. Phase 1 and Phase 2 (discovery core) are done. Refine tool descriptions and Claude Desktop instructions as needed.
-2. Phase 3 (dataset retrieval): 3-1 done; implement **3-1a (Option B)** so retrieval defaults to in-memory and returns data in the response; then 3-2–3-5 (preview, metadata, bulk, comparison) as needed.
-3. Phase 2: implement remaining discovery items 2-7–2-11 (subcategories, gov_org, time-series, similar-dataset, history) as needed.
-4. Phase 4 (analysis): define scope and implement analyze tool when ready.
-5. Phase 5: iterate on orchestrator prompts and UX.
+2. **Phase 3**: Implement **3-1a (Option B)** so retrieval defaults to in-memory and returns data in the response; then **3-3** (detailed dataset metadata).
+3. **Phase 5 (orchestrator up to retrieval)**: Implement **5-1** (orchestrator module) and **5-2** (CLI) per §4.4 so discover → retrieve can be tested outside Claude Desktop.
+4. **Phase 4 (analysis)**: **4-1** define scope, **4-2** implement analyze tool; then add analyze step to orchestrator.
+5. **Phase 5 (Claude Desktop)**: **5-3**, **5-4** — configure Claude Desktop and iterate on prompts.
+6. (TBD) Phase 2 remaining: **2-10**, **2-11** (similar-dataset search, search history & favorites).
+7. (TBD) Phase 3 remaining: **3-2**, **3-4**, **3-5** (dataset preview, bulk retrieval, dataset comparison).
+8. (TBD) Phase 4 optional: **4-3** (extract_table_info / metadata tool).
 
 This plan is intended to be iterated as the project evolves.

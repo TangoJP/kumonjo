@@ -25,6 +25,7 @@ def main():
     parser.add_argument("--statsField", default="07", help="Filter catalog by statsField (e.g. 07 for 企業・家計・経済)")
     parser.add_argument("--statsDataId", default=None, help="If set, fetch only this statsDataId; else all in catalog for --statsField")
     parser.add_argument("--format", choices=["csv", "parquet"], default="parquet", help="Output format")
+    parser.add_argument("--save", action="store_true", help="Write raw JSON and processed table to disk; default is in-memory only (no write)")
     args = parser.parse_args()
 
     dirs = get_data_dirs()
@@ -50,7 +51,7 @@ def main():
                 year=args.year,
                 lang=args.lang,
                 output_format=args.format,
-                save_to_disk=True,
+                save_to_disk=args.save,
             )
             ok += 1
         except Exception as e:
