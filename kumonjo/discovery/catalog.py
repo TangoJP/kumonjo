@@ -98,7 +98,7 @@ def list_stats_areas(official_dir: Path | str | None = None) -> dict:
 
     return {
         "stats_areas": areas,
-        "message": f"統計分野は大分類 {len(areas)} 件です。discover_datasets の stats_field に大分類コード（例: 02=人口・世帯）を指定して検索できます。",
+        "message": f"統計分野は大分類 {len(areas)} 件です。search_tables の category_code に大分類コード（例: 02=人口・世帯）を指定して検索できます。",
     }
 
 
@@ -123,7 +123,7 @@ def list_available_years(
     timeout_seconds: float = DEFAULT_CATALOG_TIMEOUT_SECONDS,
 ) -> dict:
     """
-    List years for which a catalog exists locally (so discover_datasets can be used).
+    List years for which a catalog exists locally (so search_tables can be used).
     Prefers consolidated catalog_full.parquet when present; else scans listOfStatsFields/.
     timeout_seconds: max time for I/O; on timeout returns error dict with timeout=True.
     Returns dict with years (sorted), lang, and optional per-year dataset_count.
@@ -149,7 +149,7 @@ def list_available_years(
                     "years": years_found,
                     "lang": lang,
                     "summary": summary,
-                    "message": f"検索可能な年: {', '.join(years_found)}。各年について discover_datasets でデータセットを検索できます。" if years_found else "カタログが空です。",
+                    "message": f"検索可能な年: {', '.join(years_found)}。各年について search_tables で統計表を検索できます。" if years_found else "カタログが空です。",
                 }
             except Exception:
                 pass
@@ -180,7 +180,7 @@ def list_available_years(
             "years": years_found,
             "lang": lang,
             "summary": summary,
-            "message": f"検索可能な年: {', '.join(years_found)}。各年について discover_datasets でデータセットを検索できます。" if years_found else "カタログがまだありません。scripts/run_list_tables.py で取得し、scripts/run_build_catalog.py で統合カタログを生成してください。",
+            "message": f"検索可能な年: {', '.join(years_found)}。各年について search_tables で統計表を検索できます。" if years_found else "カタログがまだありません。scripts/run_list_tables.py で取得し、scripts/run_build_catalog.py で統合カタログを生成してください。",
         }
 
     return _run_with_timeout(timeout_seconds, _body, timeout_error)
@@ -717,12 +717,12 @@ def search_catalog(
     timeout_seconds: float = DEFAULT_CATALOG_TIMEOUT_SECONDS,
 ) -> list[dict]:
     """
-    Search the catalog by year, optional statsField, and optional keyword.
+    Search the catalog by year, optional category_code (statsField), and optional keyword.
     Keyword is matched (case-insensitive) against statistics_name, main_category_name,
     sub_category_name, gov_org_name, title_spec_name.
     timeout_seconds: max time for I/O; on timeout returns [{error: "timeout", message: "..."}].
-    Returns a list of dicts with statsDataId, statistics_name, main_category_name,
-    sub_category_name, gov_org_name, statsField, surveyYears (limit items).
+    Returns a list of dicts with table_id, statistics_name, main_category, sub_category,
+    gov_org, category_code, year (limit items).
     Uses _get_catalog_df (discover path) then head(limit) → list[dict].
     """
 
@@ -742,6 +742,16 @@ def search_catalog(
             return []
         df = df[cols].drop_duplicates(subset=["statsDataId"] if "statsDataId" in cols else cols[0:1])
         df = df.head(limit)
+        # Rename columns for clearer API response
+        rename_map = {
+            "statsDataId": "table_id",
+            "main_category_name": "main_category",
+            "sub_category_name": "sub_category",
+            "gov_org_name": "gov_org",
+            "statsField": "category_code",
+            "surveyYears": "year",
+        }
+        df = df.rename(columns={k: v for k, v in rename_map.items() if k in df.columns})
         return df.to_dict(orient="records")
 
     timeout_result = [{"error": "timeout", "message": f"操作がタイムアウトしました。（{timeout_seconds:.0f}秒）"}]

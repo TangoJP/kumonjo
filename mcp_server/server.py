@@ -19,7 +19,7 @@ if str(_root) not in sys.path:
 
 from mcp.server.fastmcp import FastMCP
 
-from kumonjo import get_api_key, get_data_dirs, fetch_table
+from kumonjo import get_api_key, get_data_dirs, fetch_table as fetch_table_internal
 from kumonjo.analysis import run_analysis
 from kumonjo.discovery.catalog import (
     catalog_overview as _catalog_overview,
@@ -62,87 +62,95 @@ def _log_tool_call(tool_name: str, thunk):
 mcp = FastMCP(
     "Kumonjo",
     instructions=(
-        "Tools for discovering, retrieving, and analyzing Japanese government statistics (e-Stat). "
-        "All of these tools ARE available: discover_datasets, retrieve_and_process, get_dataset_metadata, analyze, catalog_overview, list_*. "
-        "(1) Search: discover_datasets(year, stats_field, keyword). "
-        "(2) Fetch table data (columns and rows): retrieve_and_process(stats_data_id, year, lang)—do NOT use get_dataset_metadata for table contents (metadata only). "
-        "(3) After retrieve_and_process, use analyze(columns, rows, analysis_type, ...) for summary, filter, aggregate, time_series, or top_bottom. "
-        "catalog_overview for years and stats_fields. Do not use catalog_aggregate (not exposed)."
+        "Tools for searching, fetching, and analyzing Japanese government statistics (e-Stat 統計表). "
+        "WORKFLOW: (1) search_tables → find table_ids, (2) fetch_table → get columns+rows, (3) analyze → run analysis. "
+        "Available tools: search_tables, fetch_table, get_table_info, analyze, list_categories, list_years, list_category_codes, list_subcategories, find_multi_year_tables. "
+        "IMPORTANT: fetch_table returns actual data (columns, rows). get_table_info returns metadata only (frequency, dates)—do NOT use it for data."
     ),
     json_response=True,
 )
 
 # Canonical list so list_available_tools and docs stay in sync
 _TOOLS_META = [
-    ("catalog_overview", "Years, dataset counts, stats fields for a year."),
-    ("list_stats_areas", "List 大分類・小分類 from statsfield.csv."),
-    ("list_stats_fields_for_year", "Stats fields and counts for one year."),
-    ("time_series_discovery", "Find statistics available across multiple years."),
-    ("list_available_years", "Years that have a local catalog."),
-    ("discover_datasets", "Search catalog by year/stats_field/keyword → list of statsDataIds."),
-    ("get_dataset_metadata", "Dataset metadata (survey frequency, last updated); not table rows."),
-    ("retrieve_and_process", "Fetch table by statsDataId; returns columns and rows for analyze."),
-    ("analyze", "Run summary/filter/aggregate/time_series/top_bottom on columns+rows from retrieve_and_process."),
+    ("list_categories", "List available years and category codes (大分類). Start here to see what's searchable."),
+    ("list_subcategories", "List all category/subcategory pairs (大分類・小分類) from official definitions."),
+    ("list_category_codes", "List category codes and table counts for a specific year."),
+    ("find_multi_year_tables", "Find tables that exist across multiple years (for time-series analysis)."),
+    ("list_years", "List years that have searchable tables."),
+    ("search_tables", "Search for tables by year/category/keyword. Returns table_ids to use with fetch_table."),
+    ("get_table_info", "Get table metadata (survey frequency, dates). Does NOT return data rows."),
+    ("fetch_table", "Fetch actual table data (columns + rows). Use table_id from search_tables."),
+    ("analyze", "Analyze data from fetch_table: summary, filter, aggregate, time_series, top_bottom."),
 ]
 
 
 @mcp.tool()
 def list_available_tools() -> dict:
     """
-    Return the list of all tools provided by this server. Use this if unsure which tools exist.
-    discover_datasets and retrieve_and_process are available; use them to search and fetch table data, then analyze.
+    List all tools provided by this server.
+    Workflow: search_tables (find table_ids) → fetch_table (get data) → analyze (run analysis).
     """
     return {
         "tools": [{"name": n, "description": d} for n, d in _TOOLS_META],
-        "message": "discover_datasets でデータセットを検索し、retrieve_and_process で表データを取得、analyze で分析できます。",
+        "message": "search_tables で表を検索 → fetch_table でデータ取得 → analyze で分析。",
     }
 
 
 @mcp.tool()
-def catalog_overview(
+def list_categories(
     lang: str = "J",
     year: str | None = None,
-    include_stats_areas: bool = False,
+    include_subcategories: bool = False,
 ) -> dict:
     """
-    Single lookup for catalog: years available, dataset count per year, and optionally stats fields for a given year or master stats areas. Use for '何年分のデータが検索できる？', '2024年の統計分野全て', or 'overview of what I can search'.
-    lang: language code (J = Japanese).
-    year: if set, also return stats_fields (大分類コード + dataset_count + names) for this year; if null, only years + counts.
-    include_stats_areas: if True, add stats_areas (大分類・小分類 from statsfield.csv).
-    Returns years, summary (dataset_count per year), optional year, stats_fields, stats_areas, and message.
+    List available years and optionally category codes for a specific year. Start here to understand what's searchable.
+    Use for: '何年分のデータがある？', '2024年のカテゴリ一覧', 'what categories can I search?'
+
+    Args:
+        lang: Language code. J=Japanese (default), E=English.
+        year: If provided, also returns category_codes (大分類) with table counts for that year.
+        include_subcategories: If True, includes full category/subcategory hierarchy.
+
+    Returns: years (list), table_counts (per year), and optionally category_codes, subcategories.
     """
-    return _log_tool_call("catalog_overview", lambda: _catalog_overview(lang=lang, year=year, include_stats_areas=include_stats_areas))
+    return _log_tool_call("list_categories", lambda: _catalog_overview(lang=lang, year=year, include_stats_areas=include_subcategories))
 
 
 @mcp.tool()
-def list_stats_areas() -> dict:
+def list_subcategories() -> dict:
     """
-    List all stats areas (大分類・小分類) from the official statsfield.csv.
-    Call when the user asks 'どの統計分野がある？' or 'list all stats areas'.
-    Returns stats_areas (code, name, sub_categories) and message. Does not read the catalog.
+    List all category and subcategory pairs (大分類・小分類) from official e-Stat definitions.
+    Use for: 'どんな統計分野がある？', 'show me all categories', 'what topics are available?'
+
+    Returns: List of categories, each with code, name, and nested subcategories.
+    Note: This is the official hierarchy, not filtered by what's actually in the local catalog.
     """
-    return _log_tool_call("list_stats_areas", _list_stats_areas)
+    return _log_tool_call("list_subcategories", _list_stats_areas)
 
 
 @mcp.tool()
-def list_stats_fields_for_year(
+def list_category_codes(
     year: str = "2024",
     lang: str = "J",
     include_names: bool = True,
 ) -> dict:
     """
-    Return unique stats_field (大分類コード) for a given year with dataset counts. Fast: reads only that year from the catalog (predicate pushdown).
-    Call when the user asks '2024年の統計分野全て出して' or 'which stats fields have data in year X'.
-    year: survey year (e.g. 2024).
-    lang: language code (J = Japanese).
-    include_names: if True, add 大分類 names from statsfield.csv (default True).
-    Returns year, lang, stats_fields (list of {stats_field, dataset_count, stats_field_name}), and message.
+    List category codes (大分類コード) available for a specific year, with table counts.
+    Use for: '2024年にはどのカテゴリがある？', 'what categories have data in 2023?'
+
+    Args:
+        year: Year to check (e.g., "2024").
+        lang: Language code. J=Japanese (default), E=English.
+        include_names: If True, includes human-readable category names.
+
+    Returns: List of {category_code, table_count, category_name} for the specified year.
+    Example: category_code="02" is 人口・世帯 (Population/Households).
     """
-    return _log_tool_call("list_stats_fields_for_year", lambda: _list_stats_fields_for_year(year=year, lang=lang, include_names=include_names))
+    return _log_tool_call("list_category_codes", lambda: _list_stats_fields_for_year(year=year, lang=lang, include_names=include_names))
 
 
 @mcp.tool()
-def time_series_discovery(
+def find_multi_year_tables(
     year_start: str | None = None,
     year_end: str | None = None,
     lang: str = "J",
@@ -150,67 +158,83 @@ def time_series_discovery(
     limit: int = 50,
 ) -> dict:
     """
-    Find statistics that exist across multiple years (e.g. same statistics_name 2020–2024). Use for '複数年にわたる統計' or '毎年ある統計'.
-    year_start, year_end: optional year range; only consider years in [year_start, year_end].
-    min_years: include only statistics appearing in at least this many years (default 2).
-    limit: max number of statistics to return (default 50).
-    Returns year_start, year_end, lang, statistics (statistics_name, stat_name_code, years, year_count), message.
+    Find tables that exist across multiple years (useful for time-series analysis).
+    Use for: '複数年にわたる統計', '毎年ある統計', 'tables available from 2020 to 2024'
+
+    Args:
+        year_start: Start of year range (optional).
+        year_end: End of year range (optional).
+        lang: Language code. J=Japanese (default), E=English.
+        min_years: Only include tables appearing in at least this many years (default 2).
+        limit: Max results to return (default 50).
+
+    Returns: List of {statistics_name, years, year_count} for tables spanning multiple years.
     """
-    return _log_tool_call("time_series_discovery", lambda: _time_series_discovery(year_start=year_start, year_end=year_end, lang=lang, min_years=min_years, limit=limit))
+    return _log_tool_call("find_multi_year_tables", lambda: _time_series_discovery(year_start=year_start, year_end=year_end, lang=lang, min_years=min_years, limit=limit))
 
 
 @mcp.tool()
-def list_available_years(lang: str = "J") -> dict:
+def list_years(lang: str = "J") -> dict:
     """
-    List which years have a local catalog (so datasets can be discovered for those years).
-    Uses the consolidated catalog (data/processed/{lang}/catalog_full.parquet) when present; does not scan JSON files.
-    Call this when the user asks "何年分のデータが検索できる？" or "what years are available?".
-    lang: language code (J = Japanese).
-    Returns years (sorted), summary with dataset_count per year, and a short message in Japanese.
+    List years that have searchable tables in the local catalog.
+    Use for: '何年のデータがある？', 'what years are available?'
+
+    Args:
+        lang: Language code. J=Japanese (default), E=English.
+
+    Returns: List of years (sorted) with table counts per year.
+    Note: Only years with downloaded catalog data are listed.
     """
-    return _log_tool_call("list_available_years", lambda: _list_available_years(lang=lang))
+    return _log_tool_call("list_years", lambda: _list_available_years(lang=lang))
 
 
 @mcp.tool()
-def discover_datasets(
+def search_tables(
     year: str = "2024",
     lang: str = "J",
-    stats_field: str | None = None,
+    category_code: str | None = None,
     keyword: str | None = None,
     limit: int = 20,
 ) -> list[dict]:
     """
-    Find datasets (statsDataIds) in the catalog that match the given criteria.
-    Uses the consolidated catalog (data/processed/{lang}/catalog_full.parquet) when present; does not search JSON files.
-    Use this to answer questions like "2024年の雇用統計" or "人口・世帯のデータ".
-    year: survey year (e.g. 2024).
-    lang: language code (J = Japanese).
-    stats_field: optional statsField code (e.g. 02=人口・世帯, 03=労働・賃金, 07=企業・家計・経済).
-    keyword: optional search term matched against statistics name, category, gov org (e.g. 雇用, 人口).
-    limit: max number of datasets to return (default 20).
-    Returns a list of datasets with statsDataId, statistics_name, main_category_name, sub_category_name, gov_org_name.
+    Search for statistical tables matching your criteria. Returns table_ids to use with fetch_table.
+    Use for: '2024年の雇用統計', '人口に関するデータ', 'employment statistics'
+
+    Args:
+        year: Year to search (e.g., "2024").
+        lang: Language code. J=Japanese (default), E=English.
+        category_code: Filter by category (e.g., "02"=人口・世帯, "03"=労働・賃金). Use list_category_codes to see options.
+        keyword: Search term matched against table name, category, government org (e.g., "雇用", "人口").
+        limit: Max results (default 20).
+
+    Returns: List of tables with {table_id, statistics_name, main_category, sub_category, gov_org}.
+    Next step: Use table_id with fetch_table to get actual data.
     """
-    return _log_tool_call("discover_datasets", lambda: search_catalog(year=year, lang=lang, stats_field=stats_field, keyword=keyword, limit=limit))
+    return _log_tool_call("search_tables", lambda: search_catalog(year=year, lang=lang, stats_field=category_code, keyword=keyword, limit=limit))
 
 
 @mcp.tool()
-def get_dataset_metadata(
-    stats_data_id: str,
+def get_table_info(
+    table_id: str,
     year: str = "2024",
     lang: str = "J",
     use_api_fallback: bool = True,
 ) -> dict:
     """
-    Return detailed dataset metadata: survey frequency (月次/年次), last updated, data period from e-Stat.
-    Tries the catalog first; if the dataset is not in the catalog and use_api_fallback is True, fetches from the e-Stat API.
-    stats_data_id: e.g. 0002111847 (from discover_datasets).
-    year: survey year.
-    lang: language code (J = Japanese).
-    use_api_fallback: if True and not in catalog, call e-Stat API for metadata (requires ESTAT_APP_ID).
-    Returns survey_frequency, last_updated, data_period, statistics_name, title, gov_org_name (when available).
+    Get metadata about a table (survey frequency, dates). Does NOT return actual data rows.
+    Use for: 'この統計は月次？年次？', 'when was this table last updated?'
+
+    Args:
+        table_id: Table ID from search_tables (e.g., "0002111847").
+        year: Year context for the table.
+        lang: Language code. J=Japanese (default), E=English.
+        use_api_fallback: If True and not in local catalog, fetches from e-Stat API.
+
+    Returns: {survey_frequency, last_updated, data_period, statistics_name, gov_org}.
+    Note: For actual data (columns, rows), use fetch_table instead.
     """
     def _do() -> dict:
-        out = _get_metadata_catalog(stats_data_id=stats_data_id.strip(), year=year, lang=lang)
+        out = _get_metadata_catalog(stats_data_id=table_id.strip(), year=year, lang=lang)
         if out.get("timeout"):
             return out
         # If catalog has at least one of the key fields, consider it found
@@ -220,7 +244,7 @@ def get_dataset_metadata(
             return out
         try:
             app_id = get_api_key()
-            api_meta = _fetch_meta_api(app_id=app_id, stats_data_id=stats_data_id.strip(), year=year, lang=lang)
+            api_meta = _fetch_meta_api(app_id=app_id, stats_data_id=table_id.strip(), year=year, lang=lang)
             if api_meta.get("error"):
                 out["message"] = api_meta.get("error", "API error")
                 return out
@@ -232,29 +256,32 @@ def get_dataset_metadata(
             out["message"] = str(e)
             return out
 
-    return _log_tool_call("get_dataset_metadata", _do)
+    return _log_tool_call("get_table_info", _do)
 
 
 @mcp.tool()
-def retrieve_and_process(
-    stats_data_id: str,
+def fetch_table(
+    table_id: str,
     year: str = "2024",
     lang: str = "J",
     output_format: str = "parquet",
     save_to_disk: bool = False,
-    max_rows_in_response: int = 2000,
+    max_rows: int = 2000,
 ) -> dict:
     """
-    Fetch and process one e-Stat table by statsDataId.
-    When save_to_disk is False (default): data is returned in the response (columns, rows, row_count); nothing is written to disk.
-    When save_to_disk is True: raw JSON and processed table are saved; returns path to the processed file.
-    stats_data_id: e.g. 0002111847 (from discover_datasets).
-    year: survey year.
-    lang: language code (J = Japanese).
-    output_format: parquet or csv (used only when save_to_disk is True).
-    save_to_disk: if True, write to data/raw and data/processed and return path; if False, return data in response.
-    max_rows_in_response: when save_to_disk is False, include at most this many rows in the response (default 2000); row_count is always the full count.
-    Returns ok, row_count, and either (path when save_to_disk) or (columns, rows when not). Requires ESTAT_APP_ID in .env.
+    Fetch actual table data (columns and rows) from e-Stat. This is the main data retrieval tool.
+    Use for: 'このテーブルのデータを取得', 'get the employment data', 'fetch table 0002111847'
+
+    Args:
+        table_id: Table ID from search_tables (e.g., "0002111847").
+        year: Year of the data.
+        lang: Language code. J=Japanese (default), E=English.
+        output_format: "parquet" or "csv" (only used when save_to_disk=True).
+        save_to_disk: If True, saves to disk and returns file path. If False (default), returns data directly.
+        max_rows: Max rows to return in response (default 2000). Full row_count is always provided.
+
+    Returns: {ok, columns, rows, row_count, truncated} when save_to_disk=False.
+    Next step: Pass columns and rows to analyze() for summary, filter, aggregate, etc.
     """
     def _do() -> dict:
         try:
@@ -262,9 +289,9 @@ def retrieve_and_process(
         except ValueError as e:
             return {"ok": False, "error": str(e), "path": None, "rows": 0}
         try:
-            df = fetch_table(
+            df = fetch_table_internal(
                 app_id=app_id,
-                stats_data_id=stats_data_id.strip(),
+                stats_data_id=table_id.strip(),
                 year=year,
                 lang=lang,
                 output_format=output_format,
@@ -277,10 +304,10 @@ def retrieve_and_process(
         n = len(df)
         if save_to_disk:
             dirs = get_data_dirs()
-            path = dirs["processed"] / lang / "statsDataId" / f"{year}_statsDataId_{stats_data_id.strip()}.{output_format}"
-            return {"ok": True, "path": str(path), "rows": n, "error": None}
+            path = dirs["processed"] / lang / "statsDataId" / f"{year}_statsDataId_{table_id.strip()}.{output_format}"
+            return {"ok": True, "path": str(path), "row_count": n, "error": None}
         # In-memory: return columns and rows (capped) for Claude to use
-        cap = max(0, max_rows_in_response)
+        cap = max(0, max_rows)
         sample = df.head(cap) if cap else df
         # Convert to JSON-serializable: use list of dicts; handle non-scalar values
         rows = []
@@ -288,16 +315,14 @@ def retrieve_and_process(
             rows.append({k: _json_val(v) for k, v in r.items()})
         return {
             "ok": True,
-            "path": None,
-            "rows": n,
             "row_count": n,
             "columns": list(df.columns),
-            "rows_sample": rows,
+            "rows": rows,
             "truncated": n > cap if cap else False,
             "error": None,
         }
 
-    return _log_tool_call("retrieve_and_process", _do)
+    return _log_tool_call("fetch_table", _do)
 
 
 @mcp.tool()
@@ -316,14 +341,24 @@ def analyze(
     order: str = "top",
 ) -> dict:
     """
-    Run basic analysis on a table (use columns and rows from retrieve_and_process).
-    analysis_type: one of summary, filter, aggregate, time_series, top_bottom.
-    summary: stats (count, mean, median, min, max, std, sum) on value column; use value_column to override default "value".
-    filter: subset rows; set filter_column and either filter_value (single) or filter_values (list).
-    aggregate: group by group_by columns and agg (sum, mean, count) the value column.
-    time_series: aggregate value by time; time_column optional (inferred from names like time_name, year if not set).
-    top_bottom: top n or bottom n by value; set n and order ("top" or "bottom"); optional group_by for per-group top/bottom.
-    Returns type, result (fixed schema per analysis type), and optional meta, warnings.
+    Analyze data returned by fetch_table. Supports summary stats, filtering, aggregation, and more.
+    Use for: '合計を出して', 'filter by region', 'top 10 prefectures', 'trend over time'
+
+    Args:
+        columns: Column names from fetch_table response.
+        rows: Row data from fetch_table response.
+        analysis_type: One of: "summary", "filter", "aggregate", "time_series", "top_bottom".
+        value_column: Column containing numeric values (default "value").
+        filter_column: Column to filter on (for "filter" type).
+        filter_value: Single value to match (for "filter" type).
+        filter_values: List of values to match (for "filter" type).
+        group_by: Columns to group by (for "aggregate" type).
+        agg: Aggregation function: "sum", "mean", "count" (for "aggregate" type).
+        time_column: Column for time axis (for "time_series" type, auto-detected if not set).
+        n: Number of results (for "top_bottom" type, default 10).
+        order: "top" or "bottom" (for "top_bottom" type).
+
+    Returns: {type, result, meta, warnings} with analysis results.
     """
     def _do() -> dict:
         return run_analysis(
