@@ -110,6 +110,50 @@ def _clean_key(key: str) -> str:
     return key.replace("_$", "").replace("@", "").replace("_no", "")
 
 
+def _table_inf_value(v: Any) -> str | None:
+    """Normalize TABLE_INF value: extract '$' from dict or return string."""
+    if v is None:
+        return None
+    if isinstance(v, dict):
+        return v.get("$") if "$" in v else (v.get("@code") or next(iter(v.values()), None))
+    if isinstance(v, (str, int, float)):
+        return str(v)
+    return None
+
+
+def extract_table_metadata(response: dict[str, Any]) -> dict[str, str | None]:
+    """
+    Extract detailed dataset metadata from getStatsData TABLE_INF.
+    Returns survey_frequency (月次/年次 etc from CYCLE), last_updated (UPDATED_DATE),
+    data_period (SURVEY_DATE), plus statistics_name, title when present.
+    """
+    table_inf = (
+        response.get("GET_STATS_DATA", {})
+        .get("STATISTICAL_DATA", {})
+        .get("TABLE_INF", {})
+    )
+    if not isinstance(table_inf, dict):
+        return {}
+
+    def get_val(key: str) -> str | None:
+        raw = table_inf.get(key)
+        if raw is None:
+            return None
+        return _table_inf_value(raw) if isinstance(raw, (dict, str, int, float)) else str(raw)
+
+    raw_id = table_inf.get("@id")
+    stats_data_id = str(raw_id) if raw_id is not None else None
+    return {
+        "survey_frequency": get_val("CYCLE"),  # 月次/年次 etc
+        "last_updated": get_val("UPDATED_DATE"),
+        "data_period": get_val("SURVEY_DATE"),
+        "statistics_name": get_val("STATISTICS_NAME"),
+        "title": get_val("TITLE"),
+        "open_date": get_val("OPEN_DATE"),
+        "stats_data_id": stats_data_id,
+    }
+
+
 def extract_table_info(response: dict[str, Any]) -> pd.DataFrame:
     """Extract TABLE_INF metadata as a two-column DataFrame (column, information)."""
     table_inf = (

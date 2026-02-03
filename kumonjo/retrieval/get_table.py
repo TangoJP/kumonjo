@@ -5,10 +5,12 @@ import logging
 from pathlib import Path
 
 import pandas as pd
+import requests
 
 from kumonjo.api.client import EstatAPIError, get_stats_data
 from kumonjo.processing.parse_response import (
     extract_data_from_response,
+    extract_table_metadata,
     reorder_df_columns,
 )
 
@@ -87,3 +89,58 @@ def fetch_table(
         logger.info("正常に終了しました。 statsDataId=%s: table saved to %s", stats_data_id, out_path)
 
     return df
+
+
+def fetch_dataset_metadata(
+    app_id: str,
+    stats_data_id: str,
+    year: str,
+    lang: str = "J",
+    session: requests.Session | None = None,
+) -> dict:
+    """
+    Fetch detailed dataset metadata from e-Stat API (getStatsData TABLE_INF).
+    Returns survey_frequency (月次/年次), last_updated, data_period, statistics_name, title, etc.
+    Use when the dataset is not in the catalog or fresh API metadata is needed.
+    """
+    try:
+        response = get_stats_data(
+            app_id=app_id,
+            stats_data_id=stats_data_id.strip(),
+            survey_years=year,
+            lang=lang,
+            session=session,
+        )
+    except EstatAPIError as e:
+        logger.warning("e-Stat API error for metadata statsDataId=%s: %s", stats_data_id, e)
+        return {
+            "stats_data_id": stats_data_id,
+            "year": year,
+            "lang": lang,
+            "survey_frequency": None,
+            "last_updated": None,
+            "data_period": None,
+            "statistics_name": None,
+            "title": None,
+            "error": str(e),
+        }
+    except Exception as e:
+        logger.warning("getStatsData failed for metadata statsDataId=%s: %s", stats_data_id, e)
+        return {
+            "stats_data_id": stats_data_id,
+            "year": year,
+            "lang": lang,
+            "survey_frequency": None,
+            "last_updated": None,
+            "data_period": None,
+            "statistics_name": None,
+            "title": None,
+            "error": str(e),
+        }
+
+    meta = extract_table_metadata(response)
+    meta["stats_data_id"] = meta.get("stats_data_id") or stats_data_id.strip()
+    meta["year"] = year
+    meta["lang"] = lang
+    meta["error"] = None
+    return meta

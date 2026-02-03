@@ -161,6 +161,52 @@ def discover_datasets(
 
 
 @mcp.tool()
+def get_dataset_metadata(
+    stats_data_id: str,
+    year: str = "2024",
+    lang: str = "J",
+    use_api_fallback: bool = True,
+) -> dict:
+    """
+    Return detailed dataset metadata: survey frequency (月次/年次), last updated, data period from e-Stat.
+    Tries the catalog first; if the dataset is not in the catalog and use_api_fallback is True, fetches from the e-Stat API.
+    stats_data_id: e.g. 0002111847 (from discover_datasets).
+    year: survey year.
+    lang: language code (J = Japanese).
+    use_api_fallback: if True and not in catalog, call e-Stat API for metadata (requires ESTAT_APP_ID).
+    Returns survey_frequency, last_updated, data_period, statistics_name, title, gov_org_name (when available).
+    """
+    from kumonjo.discovery.catalog import get_dataset_metadata as _get_metadata_catalog
+
+    def _do() -> dict:
+        out = _get_metadata_catalog(stats_data_id=stats_data_id.strip(), year=year, lang=lang)
+        if out.get("timeout"):
+            return out
+        # If catalog has at least one of the key fields, consider it found
+        if out.get("survey_frequency") is not None or out.get("last_updated") is not None or out.get("data_period") is not None:
+            return out
+        if not use_api_fallback or "該当するデータセットがカタログにありません" not in (out.get("message") or ""):
+            return out
+        try:
+            from kumonjo import get_api_key
+            from kumonjo.retrieval.get_table import fetch_dataset_metadata as _fetch_meta_api
+            app_id = get_api_key()
+            api_meta = _fetch_meta_api(app_id=app_id, stats_data_id=stats_data_id.strip(), year=year, lang=lang)
+            if api_meta.get("error"):
+                out["message"] = api_meta.get("error", "API error")
+                return out
+            return api_meta
+        except ValueError as e:
+            out["message"] = str(e)
+            return out
+        except Exception as e:
+            out["message"] = str(e)
+            return out
+
+    return _log_tool_call("get_dataset_metadata", _do)
+
+
+@mcp.tool()
 def retrieve_and_process(
     stats_data_id: str,
     year: str = "2024",

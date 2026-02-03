@@ -746,3 +746,88 @@ def search_catalog(
 
     timeout_result = [{"error": "timeout", "message": f"操作がタイムアウトしました。（{timeout_seconds:.0f}秒）"}]
     return _run_with_timeout(timeout_seconds, _body, timeout_result)
+
+
+def get_dataset_metadata(
+    stats_data_id: str,
+    year: str,
+    lang: str = "J",
+    processed_dir: Path | str | None = None,
+    timeout_seconds: float = DEFAULT_CATALOG_TIMEOUT_SECONDS,
+) -> dict:
+    """
+    Return detailed dataset metadata from the catalog: survey frequency (月次/年次),
+    last updated, data period, plus statistics_name, title, gov_org_name when present.
+    Uses catalog_full.parquet or per-year listOfStatsFields; returns empty metadata
+    if the dataset is not in the catalog.
+    timeout_seconds: max time for I/O; on timeout returns {error, message, timeout: True}.
+    """
+    sid = str(stats_data_id).strip()
+    y = str(year).strip()
+    timeout_error = {
+        "stats_data_id": sid,
+        "year": y,
+        "lang": lang,
+        "survey_frequency": None,
+        "last_updated": None,
+        "data_period": None,
+        "statistics_name": None,
+        "title": None,
+        "gov_org_name": None,
+        "message": f"操作がタイムアウトしました。（{timeout_seconds:.0f}秒）",
+        "timeout": True,
+    }
+
+    def _body() -> dict:
+        df = load_catalog(year=y, lang=lang, processed_dir=processed_dir)
+        if df.empty:
+            return {
+                "stats_data_id": sid,
+                "year": y,
+                "lang": lang,
+                "survey_frequency": None,
+                "last_updated": None,
+                "data_period": None,
+                "statistics_name": None,
+                "title": None,
+                "gov_org_name": None,
+                "message": "該当するデータセットがカタログにありません。",
+            }
+        match = df[df["statsDataId"].astype(str).str.strip() == sid]
+        if match.empty:
+            return {
+                "stats_data_id": sid,
+                "year": y,
+                "lang": lang,
+                "survey_frequency": None,
+                "last_updated": None,
+                "data_period": None,
+                "statistics_name": None,
+                "title": None,
+                "gov_org_name": None,
+                "message": "該当するデータセットがカタログにありません。",
+            }
+        row = match.iloc[0]
+        def _cell(c: str):
+            if c not in row.index:
+                return None
+            v = row[c]
+            if v is None or (isinstance(v, float) and v != v):
+                return None
+            return str(v).strip() or None
+
+        return {
+            "stats_data_id": sid,
+            "year": y,
+            "lang": lang,
+            "survey_frequency": _cell("cycle"),
+            "last_updated": _cell("updated_date"),
+            "data_period": _cell("survey_date"),
+            "statistics_name": _cell("statistics_name") if "statistics_name" in row.index else _cell("stat_name_name"),
+            "title": _cell("title"),
+            "gov_org_name": _cell("gov_org_name"),
+            "open_date": _cell("open_date"),
+            "message": None,
+        }
+
+    return _run_with_timeout(timeout_seconds, _body, timeout_error)

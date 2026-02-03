@@ -190,7 +190,7 @@ Analysis (Phase 4) will plug in as an optional step after 5; until then, the orc
 
 - [x] **3-1** **retrieve_and_process**: statsDataId, year, lang, output_format → path, rows, status. *(Current: always writes to disk; to be updated per 3-1a.)*
 - [x] **3-1a** **Option B — Optional disk write for retrieved datasets**: Add a parameter (e.g. `save_to_disk: bool = False`). When `False` (default): fetch and process in memory only; **return data in the tool response** (e.g. `columns`, `rows` or `sample_rows`, `row_count`) so Claude can answer questions without reading a file; do **not** write to `data/raw/.../statsDataId/` or `data/processed/.../statsDataId/`; omit or set `path` to null. When `True`: keep current behavior (write raw + processed, return local filesystem `path`). Align `fetch_table()` and CLI scripts with this policy (e.g. optional write).
-- [ ] **3-3** **Detailed dataset metadata**: Survey frequency (月次/年次), last updated, data period from e-Stat API.
+- [x] **3-3** **Detailed dataset metadata**: Survey frequency (月次/年次), last updated, data period from e-Stat API.
 - [ ] **3-2** (TBD) **Dataset preview**: Before retrieve: column names, row count, sample rows.
 - [ ] **3-4** (TBD) **Bulk retrieval**: Multiple statsDataIds in one call for batch/time-series download.
 - [ ] **3-5** (TBD) **Dataset comparison**: Compare multiple datasets (name, size, column count) side-by-side.
