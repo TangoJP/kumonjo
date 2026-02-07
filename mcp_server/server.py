@@ -6,18 +6,25 @@ Or: python -m mcp_server.server
 Uses stdio transport by default (for Claude Desktop).
 """
 
+import asyncio
 import json
 import logging
 import sys
 import time
 from pathlib import Path
+from typing import Any
 
 # Project root = parent of mcp_server/
 _root = Path(__file__).resolve().parent.parent
 if str(_root) not in sys.path:
     sys.path.insert(0, str(_root))
 
-from mcp.server.fastmcp import FastMCP
+try:
+    from mcp.server import FastMCP
+except ImportError as e:
+    print(f"ERROR: Failed to import FastMCP: {e}", file=sys.stderr)
+    print("Please ensure mcp package is installed: pip install 'mcp[cli]'", file=sys.stderr)
+    sys.exit(1)
 
 from kumonjo import get_api_key, get_data_dirs, fetch_table as fetch_table_internal
 from kumonjo.analysis import run_analysis
@@ -40,6 +47,11 @@ if not _logger.handlers:
     _h.setFormatter(logging.Formatter("%(asctime)s [%(name)s] %(message)s"))
     _logger.addHandler(_h)
 
+# Maximum response size in bytes (to prevent Claude message length issues)
+# Roughly 50KB of JSON - conservative limit to prevent Claude message length issues
+_MAX_RESPONSE_SIZE_BYTES = 50_000
+_MAX_RESULT_ROWS = 500  # Maximum rows to return in results (reduced from 1000)
+
 
 def _log_tool_call(tool_name: str, thunk):
     """Run thunk(), log start/end and response size. Returns thunk result."""
@@ -59,16 +71,7 @@ def _log_tool_call(tool_name: str, thunk):
         _logger.exception("tool=%s error after %.3fs: %s", tool_name, elapsed, e)
         raise
 
-mcp = FastMCP(
-    "Kumonjo",
-    instructions=(
-        "Tools for searching, fetching, and analyzing Japanese government statistics (e-Stat 統計表). "
-        "WORKFLOW: (1) search_tables → find table_ids, (2) fetch_table → get columns+rows, (3) analyze → run analysis. "
-        "Available tools: search_tables, fetch_table, get_table_info, analyze, list_categories, list_years, list_category_codes, list_subcategories, find_multi_year_tables. "
-        "IMPORTANT: fetch_table returns actual data (columns, rows). get_table_info returns metadata only (frequency, dates)—do NOT use it for data."
-    ),
-    json_response=True,
-)
+mcp = FastMCP("Kumonjo")
 
 # Canonical list so list_available_tools and docs stay in sync
 _TOOLS_META = [
@@ -325,6 +328,129 @@ def fetch_table(
     return _log_tool_call("fetch_table", _do)
 
 
+def _truncate_result(result: dict, max_size_bytes: int = _MAX_RESPONSE_SIZE_BYTES, max_rows: int = _MAX_RESULT_ROWS) -> dict:
+    """Truncate result if it's too large, preserving structure.
+    
+    First truncates by row count, then checks size and truncates further if needed.
+    """
+    warnings = result.get("warnings", [])
+    truncated = False
+    
+    # First pass: Truncate by row count (proactive truncation)
+    if "result" in result:
+        result_data = result["result"]
+        
+        # Handle different result structures - truncate BEFORE size check
+        if "rows" in result_data and isinstance(result_data["rows"], list):
+            original_count = len(result_data["rows"])
+            if original_count > max_rows:
+                result_data["rows"] = result_data["rows"][:max_rows]
+                truncated = True
+                warnings.append(
+                    f"Result truncated to {max_rows} rows (original: {original_count:,} rows) "
+                    f"to prevent message length issues."
+                )
+        
+        if "groups" in result_data and isinstance(result_data["groups"], list):
+            original_count = len(result_data["groups"])
+            if original_count > max_rows:
+                result_data["groups"] = result_data["groups"][:max_rows]
+                truncated = True
+                warnings.append(
+                    f"Result truncated to {max_rows} groups (original: {original_count:,} groups) "
+                    f"to prevent message length issues."
+                )
+        
+        if "points" in result_data and isinstance(result_data["points"], list):
+            original_count = len(result_data["points"])
+            if original_count > max_rows:
+                result_data["points"] = result_data["points"][:max_rows]
+                truncated = True
+                warnings.append(
+                    f"Result truncated to {max_rows} points (original: {original_count:,} points) "
+                    f"to prevent message length issues."
+                )
+    
+    result["warnings"] = warnings
+    
+    # Second pass: Check size and truncate further if still too large
+    result_str = json.dumps(result, ensure_ascii=False)
+    result_size = len(result_str.encode("utf-8"))
+    
+    if result_size > max_size_bytes:
+        # Still too large after row truncation - need more aggressive truncation
+        # Estimate bytes per row and reduce further
+        if "result" in result:
+            result_data = result["result"]
+            
+            if "rows" in result_data and isinstance(result_data["rows"], list) and len(result_data["rows"]) > 0:
+                # Estimate bytes per row
+                sample_row = json.dumps(result_data["rows"][0], ensure_ascii=False)
+                bytes_per_row = len(sample_row.encode("utf-8"))
+                target_rows = max(10, int(max_size_bytes * 0.8 / bytes_per_row))  # Use 80% of limit
+                
+                if len(result_data["rows"]) > target_rows:
+                    original_count = len(result_data["rows"])
+                    result_data["rows"] = result_data["rows"][:target_rows]
+                    warnings.append(
+                        f"Result still too large after initial truncation. "
+                        f"Further reduced to {target_rows} rows (original: {original_count:,} rows)."
+                    )
+            
+            if "groups" in result_data and isinstance(result_data["groups"], list) and len(result_data["groups"]) > 0:
+                sample_group = json.dumps(result_data["groups"][0], ensure_ascii=False)
+                bytes_per_group = len(sample_group.encode("utf-8"))
+                target_groups = max(10, int(max_size_bytes * 0.8 / bytes_per_group))
+                
+                if len(result_data["groups"]) > target_groups:
+                    original_count = len(result_data["groups"])
+                    result_data["groups"] = result_data["groups"][:target_groups]
+                    warnings.append(
+                        f"Result still too large after initial truncation. "
+                        f"Further reduced to {target_groups} groups (original: {original_count:,} groups)."
+                    )
+            
+            if "points" in result_data and isinstance(result_data["points"], list) and len(result_data["points"]) > 0:
+                sample_point = json.dumps(result_data["points"][0], ensure_ascii=False)
+                bytes_per_point = len(sample_point.encode("utf-8"))
+                target_points = max(10, int(max_size_bytes * 0.8 / bytes_per_point))
+                
+                if len(result_data["points"]) > target_points:
+                    original_count = len(result_data["points"])
+                    result_data["points"] = result_data["points"][:target_points]
+                    warnings.append(
+                        f"Result still too large after initial truncation. "
+                        f"Further reduced to {target_points} points (original: {original_count:,} points)."
+                    )
+        
+        # Final size check
+        result_str = json.dumps(result, ensure_ascii=False)
+        result_size = len(result_str.encode("utf-8"))
+        
+        if result_size > max_size_bytes:
+            warnings.append(
+                f"Warning: Result is very large ({result_size:,} bytes) even after truncation. "
+                f"Consider using filters or aggregation to reduce data size."
+            )
+    
+    result["warnings"] = warnings
+    
+    # Final validation: ensure result can be serialized to JSON
+    try:
+        json.dumps(result, ensure_ascii=False)
+    except (TypeError, ValueError) as e:
+        _logger.error(f"_truncate_result: Failed to serialize result: {e}")
+        # Return a minimal error result
+        return {
+            "type": result.get("type", "unknown"),
+            "result": {},
+            "meta": result.get("meta", {}),
+            "warnings": warnings + [f"Error serializing result: {str(e)}"],
+        }
+    
+    return result
+
+
 @mcp.tool()
 def analyze(
     columns: list[str],
@@ -359,9 +485,19 @@ def analyze(
         order: "top" or "bottom" (for "top_bottom" type).
 
     Returns: {type, result, meta, warnings} with analysis results.
+    Large results are automatically truncated to prevent message length issues.
     """
     def _do() -> dict:
-        return run_analysis(
+        # Check input size and log progress
+        input_rows = len(rows)
+        _logger.info(f"analyze: Processing {input_rows:,} rows, {len(columns)} columns")
+        _logger.info(f"analyze: Analysis type: {analysis_type}")
+        
+        if input_rows > 5000:
+            _logger.warning(f"analyze: Large dataset detected ({input_rows:,} rows) - this may take time")
+        
+        # Run analysis (it will build DataFrame internally)
+        result = run_analysis(
             columns=columns,
             rows=rows,
             analysis_type=analysis_type.strip().lower(),
@@ -375,6 +511,47 @@ def analyze(
             n=max(1, min(n, 1000)) if n is not None else 10,
             order=(order or "top").strip().lower(),
         )
+        
+        # Truncate if too large (proactive truncation)
+        result = _truncate_result(result)
+        
+        # Add metadata about processing
+        if "meta" not in result:
+            result["meta"] = {}
+        result["meta"]["input_rows"] = input_rows
+        
+        # Check final size and log
+        result_size_bytes = len(json.dumps(result, ensure_ascii=False).encode("utf-8"))
+        _logger.info(f"analyze: Analysis complete. Result size: {result_size_bytes:,} bytes")
+        
+        # Log result structure for debugging
+        if "result" in result:
+            result_data = result["result"]
+            if "rows" in result_data:
+                _logger.info(f"analyze: Result contains {len(result_data['rows'])} rows")
+            if "groups" in result_data:
+                _logger.info(f"analyze: Result contains {len(result_data['groups'])} groups")
+            if "points" in result_data:
+                _logger.info(f"analyze: Result contains {len(result_data['points'])} points")
+        
+        # Final safety check - if still too large, add warning
+        if result_size_bytes > _MAX_RESPONSE_SIZE_BYTES:
+            if "warnings" not in result:
+                result["warnings"] = []
+            result["warnings"].append(
+                f"Warning: Result size ({result_size_bytes:,} bytes) exceeds recommended limit. "
+                f"Some data may have been truncated. Consider using filters or aggregation."
+            )
+            _logger.warning(f"analyze: Result still exceeds size limit after truncation: {result_size_bytes:,} bytes")
+        elif result_size_bytes > _MAX_RESPONSE_SIZE_BYTES * 0.8:
+            if "warnings" not in result:
+                result["warnings"] = []
+            result["warnings"].append(
+                f"Note: Result is large ({result_size_bytes:,} bytes). "
+                f"Consider using filters or aggregation to reduce size."
+            )
+        
+        return result
 
     return _log_tool_call("analyze", _do)
 
@@ -390,10 +567,24 @@ def _json_val(v) -> str | int | float | None:
     return str(v)
 
 
-def main() -> None:
-    # stdio is the default for Claude Desktop
-    mcp.run()
+async def main() -> None:
+    """Run the MCP server using stdio transport (for Claude Desktop)."""
+    try:
+        _logger.info("Starting Kumonjo MCP server...")
+        # Use async stdio transport (same as tuber-zukan)
+        await mcp.run_stdio_async()
+    except KeyboardInterrupt:
+        _logger.info("Server stopped by user")
+    except Exception as e:
+        _logger.exception("Fatal error in MCP server: %s", e)
+        sys.exit(1)
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        _logger.info("Server stopped by user.")
+    except Exception as e:
+        _logger.error(f"Server error: {e}", exc_info=True)
+        sys.exit(1)
